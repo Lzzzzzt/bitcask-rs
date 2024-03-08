@@ -1,25 +1,27 @@
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use std::sync::atomic::AtomicU64;
+use std::{collections::HashMap, fs, path::Path};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
-use crate::{
-    config::Config,
-    data::{
-        data_file::DataFile,
-        log_record::{LogRecord, LogRecordPosition, LogRecordType, ReadLogRecord},
-    },
-    errors::{BCResult, Errors},
-    index::{create_indexer, Indexer},
-    DB_DATA_FILE_SUFFIX,
+use crate::config::Config;
+use crate::data::data_file::DataFile;
+use crate::data::log_record::{
+    LogRecord, ReadLogRecord, RecordBatchState, RecordPosition, RecordType,
 };
+use crate::errors::{BCResult, Errors};
+use crate::index::{create_indexer, Indexer};
+use crate::utils::{check_key_valid, Key, Value};
+use crate::DB_DATA_FILE_SUFFIX;
 
 pub struct DBEngine {
     config: Config,
-    active_file: Arc<RwLock<DataFile>>,
-    old_file: Arc<RwLock<HashMap<u32, DataFile>>>,
-    index: Box<dyn Indexer>,
     /// Only used for update index
-    file_ids: Vec<u32>,
+    fids: Vec<u32>,
+    active: RwLock<DataFile>,
+    pub(crate) index: Box<dyn Indexer>,
+    archive: RwLock<HashMap<u32, DataFile>>,
+    pub(crate) batch_lock: Mutex<()>,
+    pub(crate) batch_seq: AtomicU64,
 }
 
 impl DBEngine {
@@ -40,22 +42,24 @@ impl DBEngine {
             None => DataFile::new(&config.db_path, 0)?,
         };
 
-        let data_file_ids: Vec<u32> = data_files.iter().map(|f| f.id).collect();
+        let data_fids: Vec<u32> = data_files.iter().map(|f| f.id).collect();
 
-        let file_with_id = data_file_ids.iter().cloned().zip(data_files);
+        let file_with_id = data_fids.iter().cloned().zip(data_files);
 
         let active_file_id = active_file.id;
 
         let mut engine = Self {
             index: Box::new(create_indexer(&config.index_type)),
-            active_file: Arc::new(RwLock::new(active_file)),
-            old_file: Arc::new(RwLock::new(HashMap::from_iter(file_with_id))),
-            file_ids: data_file_ids,
+            active: RwLock::new(active_file),
+            archive: RwLock::new(HashMap::from_iter(file_with_id)),
+            fids: data_fids,
             config,
+            batch_lock: Mutex::new(()),
+            batch_seq: AtomicU64::new(1),
         };
 
         // put the active file id into file ids
-        engine.file_ids.push(active_file_id);
+        engine.fids.push(active_file_id);
 
         engine.load_index_from_data_file()?;
 
@@ -68,16 +72,12 @@ impl DBEngine {
     /// + `value`: Bytes
     /// ## Return Value
     /// will return `Err` when `key` is empty
-    pub fn put(&self, key: Vec<u8>, value: Vec<u8>) -> BCResult<()> {
+    pub fn put(&self, key: Key, value: Value) -> BCResult<()> {
         // make sure the key is valid
         check_key_valid(&key)?;
 
         // construct the `LogRecord`
-        let record = LogRecord {
-            key,
-            value,
-            record_type: LogRecordType::Normal,
-        };
+        let record = LogRecord::normal(key, value);
 
         // append the record in the data file
         let record_positoin = self.append_log_record(&record)?;
@@ -101,14 +101,14 @@ impl DBEngine {
         // fecth log record positon with key
         let record_position = self.index.get(key).ok_or(Errors::KeyNotFound)?;
 
-        let target_file_id = record_position.file_id;
+        let target_file_id = record_position.fid;
 
         // get record
         let ReadLogRecord { record, .. } =
-            self.get_record_and_size(target_file_id, record_position.offset)?;
+            self.get_record(target_file_id, record_position.offset)?;
 
         // if this record is deleted, return `KeyNotFound`
-        if matches!(record.record_type, LogRecordType::Deleted) {
+        if matches!(record.record_type, RecordType::Deleted) {
             Err(Errors::KeyNotFound)
         } else {
             Ok(record.value)
@@ -126,11 +126,7 @@ impl DBEngine {
             None => return Ok(()),
         };
 
-        let record = LogRecord {
-            key: key.to_vec(),
-            value: Default::default(),
-            record_type: LogRecordType::Deleted,
-        };
+        let record = LogRecord::deleted(key.to_vec());
 
         self.append_log_record(&record)?;
 
@@ -141,16 +137,20 @@ impl DBEngine {
         Ok(())
     }
 
-    fn append_log_record(&self, record: &LogRecord) -> BCResult<LogRecordPosition> {
+    pub fn sync(&self) -> BCResult<()> {
+        self.active.read().sync()
+    }
+
+    pub(crate) fn append_log_record(&self, record: &LogRecord) -> BCResult<RecordPosition> {
         let db_path = &self.config.db_path;
 
-        let encoded_record_len = record.calculate_encoded_length();
+        let encoded_record_len = record.calculate_encoded_length() as u32;
 
         // fetch active file
-        let mut active_file = self.active_file.write();
+        let mut active_file = self.active.write();
 
         // check current active file size is small then config.data_file_size
-        if active_file.write_offset + encoded_record_len > self.config.data_file_size {
+        if active_file.write_offset + encoded_record_len > self.config.file_size_threshold {
             // sync active file
             active_file.sync()?;
 
@@ -160,7 +160,7 @@ impl DBEngine {
                 &mut *active_file,
                 DataFile::new(db_path, current_file_id + 1)?,
             );
-            self.old_file
+            self.archive
                 .write()
                 .insert(current_file_id, current_active_file);
         }
@@ -174,8 +174,8 @@ impl DBEngine {
         }
 
         // construct in-memory index infomation
-        Ok(LogRecordPosition {
-            file_id: active_file.id,
+        Ok(RecordPosition {
+            fid: active_file.id,
             offset: write_offset,
         })
     }
@@ -183,33 +183,50 @@ impl DBEngine {
     /// load index information from data file, will traverse all the data file, then process the record in order
     fn load_index_from_data_file(&mut self) -> BCResult<()> {
         // self.file_ids will at least have the active file id, so unwarp directly.
-        let (active_file_id, old_file_ids) = self.file_ids.split_last().unwrap();
+        let (active_file_id, old_file_ids) = self.fids.split_last().unwrap();
+
+        let mut batched_record = HashMap::new();
 
         // update index from old file
         for &id in old_file_ids {
-            self.update_index(id)?;
+            self.update_index_batched(id, &mut batched_record)?;
         }
 
         // update index from active file
-        self.active_file.write().write_offset = self.update_index(*active_file_id)?;
+        self.active.write().write_offset =
+            self.update_index_batched(*active_file_id, &mut batched_record)?;
 
         Ok(())
     }
 
-    fn update_index(&self, id: u32) -> BCResult<usize> {
+    fn update_index_batched(
+        &self,
+        id: u32,
+        batched: &mut HashMap<u64, Vec<LogRecord>>,
+    ) -> BCResult<u32> {
         let mut offset = 0;
         loop {
-            let (record_len, record) = match self.get_record_and_size(id, offset) {
+            let (record_len, record) = match self.get_record(id, offset) {
                 Ok(ReadLogRecord { record, size }) => (size, record),
                 Err(Errors::DataFileEndOfFile) => break,
                 Err(e) => return Err(e),
             };
 
-            let record_position = LogRecordPosition::new(id, offset);
+            let record_position = RecordPosition::new(id, offset);
 
-            match record.record_type {
-                LogRecordType::Deleted => self.index.del(&record.key),
-                LogRecordType::Normal => self.index.put(record.key, record_position),
+            match record.batch_state {
+                RecordBatchState::Enable(state) => match record.record_type {
+                    RecordType::Commited => batched
+                        .remove(&state.get())
+                        .unwrap()
+                        .into_iter()
+                        .try_for_each(|record| self.update_index(record, record_position)),
+                    _ => {
+                        batched.entry(state.into()).or_default().push(record);
+                        Ok(())
+                    }
+                },
+                RecordBatchState::Disable => self.update_index(record, record_position),
             }
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
 
@@ -219,9 +236,21 @@ impl DBEngine {
         Ok(offset)
     }
 
-    fn get_record_and_size(&self, id: u32, offset: usize) -> BCResult<ReadLogRecord> {
-        let active_file = self.active_file.read();
-        let old_files = self.old_file.read();
+    pub(crate) fn update_index(
+        &self,
+        record: LogRecord,
+        record_position: RecordPosition,
+    ) -> BCResult<()> {
+        match record.record_type {
+            RecordType::Deleted => self.index.del(&record.key),
+            RecordType::Normal => self.index.put(record.key, record_position),
+            RecordType::Commited => unreachable!(),
+        }
+    }
+
+    fn get_record(&self, id: u32, offset: u32) -> BCResult<ReadLogRecord> {
+        let active_file = self.active.read();
+        let old_files = self.archive.read();
 
         if active_file.id == id {
             active_file.read_record(offset)
@@ -229,15 +258,6 @@ impl DBEngine {
             old_files.get(&id).unwrap().read_record(offset)
         }
     }
-}
-
-#[inline]
-fn check_key_valid(key: &[u8]) -> BCResult<()> {
-    if key.is_empty() {
-        return Err(Errors::KeyEmpty);
-    }
-
-    Ok(())
 }
 
 fn load_data_file(dir: impl AsRef<Path>) -> BCResult<Vec<DataFile>> {
@@ -280,7 +300,7 @@ mod tests {
 
     fn open(temp_dir: PathBuf) -> DBEngine {
         let config = Config {
-            data_file_size: 64 * 1024 * 1024,
+            file_size_threshold: 64 * 1024 * 1024,
             db_path: temp_dir,
             sync_write: false,
             index_type: crate::config::IndexType::BTree,

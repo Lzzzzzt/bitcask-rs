@@ -1,8 +1,9 @@
 pub mod btree;
 
 use crate::config::IndexType;
-use crate::data::log_record::LogRecordPosition;
+use crate::data::log_record::RecordPosition;
 use crate::errors::BCResult;
+use crate::utils::Key;
 
 use self::btree::BTree;
 
@@ -12,13 +13,13 @@ pub trait Indexer: Sync + Send {
     /// Create a key-position set in in-memory data
     /// ### Return Value
     /// `Ok(())` means this function call is succuss, otherwise is failed.
-    fn put(&self, key: Vec<u8>, positoin: LogRecordPosition) -> BCResult<()>;
+    fn put(&self, key: Key, positoin: RecordPosition) -> BCResult<()>;
     /// ## Query `key`
     /// Query the in-memory data with given key
     /// ### Return Value
     /// + `Some(LogRecordPosition)` means in-memory data have the key-position set
     /// + `None` means in-memory data don't have the key-position set.
-    fn get(&self, key: &[u8]) -> Option<LogRecordPosition>;
+    fn get(&self, key: &[u8]) -> Option<RecordPosition>;
     /// ## Delete `key`
     /// Delete the key-position set with given key
     /// ### Return Value

@@ -1,16 +1,14 @@
 use std::path::Path;
 
-use crate::{
-    errors::BCResult,
-    file::io::{create_io_manager, IO},
-    DB_DATA_FILE_SUFFIX,
-};
+use crate::errors::BCResult;
+use crate::file::io::{create_io_manager, IO};
+use crate::DB_DATA_FILE_SUFFIX;
 
 use super::log_record::{LogRecord, ReadLogRecord};
 
 pub struct DataFile {
     pub(crate) id: u32,
-    pub(crate) write_offset: usize,
+    pub(crate) write_offset: u32,
     io: Box<dyn IO>,
 }
 
@@ -30,7 +28,7 @@ impl DataFile {
         })
     }
 
-    pub fn write_record(&mut self, record: &LogRecord) -> BCResult<usize> {
+    pub fn write_record(&mut self, record: &LogRecord) -> BCResult<u32> {
         let encoded = record.encode();
         let write_size = self.io.write(&encoded)?;
         self.write_offset += write_size;
@@ -38,7 +36,7 @@ impl DataFile {
     }
 
     /// read `ReadLogRecord` from data file by offset
-    pub fn read_record(&self, offset: usize) -> BCResult<ReadLogRecord> {
+    pub fn read_record(&self, offset: u32) -> BCResult<ReadLogRecord> {
         ReadLogRecord::decode(self.io.as_ref(), offset)
     }
 
@@ -50,10 +48,7 @@ impl DataFile {
 #[cfg(test)]
 mod tests {
 
-    use crate::{
-        data::log_record::{LogRecord, LogRecordType},
-        errors::BCResult,
-    };
+    use crate::{data::log_record::LogRecord, errors::BCResult};
 
     use super::DataFile;
 
@@ -78,35 +73,23 @@ mod tests {
         let mut data_file = DataFile::new(temp_dir.path(), 0)?;
         assert_eq!(data_file.id, 0);
 
-        let record = LogRecord {
-            key: "foo".into(),
-            value: "bar".into(),
-            record_type: LogRecordType::Normal,
-        };
+        let record = LogRecord::normal("foo".into(), "bar".into());
 
         let encoded_record = record.encode();
         let write_size = data_file.write_record(&record)?;
-        assert_eq!(encoded_record.len(), write_size);
+        assert_eq!(encoded_record.len() as u32, write_size);
 
-        let record = LogRecord {
-            key: "foo".into(),
-            value: "".into(),
-            record_type: LogRecordType::Normal,
-        };
+        let record = LogRecord::normal("foo".into(), "".into());
 
         let encoded_record = record.encode();
         let write_size = data_file.write_record(&record)?;
-        assert_eq!(encoded_record.len(), write_size);
+        assert_eq!(encoded_record.len() as u32, write_size);
 
-        let record = LogRecord {
-            key: "foo".into(),
-            value: Default::default(),
-            record_type: LogRecordType::Deleted,
-        };
+        let record = LogRecord::deleted("foo".into());
 
         let encoded_record = record.encode();
         let write_size = data_file.write_record(&record)?;
-        assert_eq!(encoded_record.len(), write_size);
+        assert_eq!(encoded_record.len() as u32, write_size);
 
         Ok(())
     }
@@ -119,15 +102,12 @@ mod tests {
         assert_eq!(data_file.id, 0);
 
         // normal record
-        let record = LogRecord {
-            key: "foo".into(),
-            value: "baraaa".into(),
-            record_type: LogRecordType::Normal,
-        };
+        let record = LogRecord::normal("foo".into(), "baraaa".into());
 
         data_file.write_record(&record)?;
 
         let read_record = data_file.read_record(0)?;
+
         let mut size = read_record.size;
 
         assert_eq!(record.key, read_record.record.key);
@@ -135,11 +115,7 @@ mod tests {
         assert_eq!(record.record_type, read_record.record.record_type);
 
         // value is empty
-        let record = LogRecord {
-            key: "foo".into(),
-            value: Default::default(),
-            record_type: LogRecordType::Normal,
-        };
+        let record = LogRecord::normal("foo".into(), Default::default());
 
         data_file.write_record(&record)?;
 
@@ -151,11 +127,7 @@ mod tests {
         assert_eq!(record.record_type, read_record.record.record_type);
 
         // type is deleted
-        let record = LogRecord {
-            key: "foo".into(),
-            value: Default::default(),
-            record_type: LogRecordType::Deleted,
-        };
+        let record = LogRecord::deleted("foo".into());
 
         data_file.write_record(&record)?;
 
@@ -174,11 +146,7 @@ mod tests {
         let mut data_file = DataFile::new(temp_dir.path(), 0)?;
         assert_eq!(data_file.id, 0);
 
-        let record = LogRecord {
-            key: "foo".into(),
-            value: "bar".into(),
-            record_type: LogRecordType::Normal,
-        };
+        let record = LogRecord::normal("foo".into(), "baraaa".into());
 
         data_file.write_record(&record)?;
 

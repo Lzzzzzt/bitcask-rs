@@ -1,30 +1,30 @@
-use crate::{data::log_record::LogRecordPosition, errors::*};
+use crate::{data::log_record::RecordPosition, errors::*, utils::Key};
 use parking_lot::RwLock;
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use super::Indexer;
 
 /// ## in-memory data using `BTreeMap`
 pub struct BTree {
-    inner: Arc<RwLock<BTreeMap<Vec<u8>, LogRecordPosition>>>,
+    inner: RwLock<BTreeMap<Key, RecordPosition>>,
 }
 
 impl BTree {
     pub(crate) fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(BTreeMap::new())),
+            inner: RwLock::new(BTreeMap::new()),
         }
     }
 }
 
 impl Indexer for BTree {
-    fn put(&self, key: Vec<u8>, positoin: LogRecordPosition) -> BCResult<()> {
+    fn put(&self, key: Key, positoin: RecordPosition) -> BCResult<()> {
         let mut map = self.inner.write();
         map.insert(key, positoin);
         Ok(())
     }
 
-    fn get(&self, key: &[u8]) -> Option<LogRecordPosition> {
+    fn get(&self, key: &[u8]) -> Option<RecordPosition> {
         let map = self.inner.read();
         map.get(key).copied()
     }
@@ -43,17 +43,17 @@ mod tests {
     #[test]
     fn put() {
         let bt = BTree::new();
-        assert!(bt.put("Hello".into(), LogRecordPosition::new(0, 1)).is_ok());
+        assert!(bt.put("Hello".into(), RecordPosition::new(0, 1)).is_ok());
     }
     #[test]
     fn get() -> BCResult<()> {
         let bt = BTree::new();
-        bt.put("Hello".into(), LogRecordPosition::new(0, 1))?;
+        bt.put("Hello".into(), RecordPosition::new(0, 1))?;
 
         let key1: Vec<u8> = "Hello".into();
         let key2: Vec<u8> = "Hell0".into();
 
-        assert_eq!(bt.get(&key1), Some(LogRecordPosition::new(0, 1)));
+        assert_eq!(bt.get(&key1), Some(RecordPosition::new(0, 1)));
 
         assert_eq!(bt.get(&key2), None);
 
@@ -62,9 +62,9 @@ mod tests {
     #[test]
     fn del() -> BCResult<()> {
         let bt = BTree::new();
-        bt.put("Hello".into(), LogRecordPosition::new(0, 1))?;
+        bt.put("Hello".into(), RecordPosition::new(0, 1))?;
 
-        assert_eq!(bt.get(b"Hello"), Some(LogRecordPosition::new(0, 1)));
+        assert_eq!(bt.get(b"Hello"), Some(RecordPosition::new(0, 1)));
 
         assert!(bt.del(b"Hello").is_ok());
         assert_eq!(bt.get(b"Hello"), None);

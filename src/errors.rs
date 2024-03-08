@@ -42,7 +42,11 @@ pub enum Errors {
     #[error("DB directory path is empty")]
     DirPathEmpty,
     #[error("Data file size too small: current is {0}B")]
-    DataFileSizeTooSmall(usize),
+    DataFileSizeTooSmall(u32),
+
+    // Batch
+    #[error("Exceed the max batch size, current is: {0}")]
+    ExceedMaxBatchSize(usize),
 }
 
 pub type BCResult<T> = std::result::Result<T, Errors>;

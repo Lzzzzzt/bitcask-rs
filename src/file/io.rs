@@ -11,13 +11,13 @@ pub trait IO: Sync + Send {
     /// ## Return Value
     /// + `Ok(usize)` means `usize` bytes data have been succussfully write into the io
     /// + `Err` means this function call failed
-    fn write(&self, buf: &[u8]) -> BCResult<usize>;
+    fn write(&self, buf: &[u8]) -> BCResult<u32>;
 
     /// read from the `io` at the given `offset` with the `buf` length
     /// ## Return Value
     /// + `Ok(usize)` means `usize` bytes data have been succussfully read into the `buf`
     /// + `Err` means this function call failed
-    fn read(&self, buf: &mut [u8], offset: usize) -> BCResult<usize>;
+    fn read(&self, buf: &mut [u8], offset: u32) -> BCResult<usize>;
 
     /// sync data
     /// TODO: not enough

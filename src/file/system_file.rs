@@ -2,7 +2,6 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
-use std::sync::Arc;
 
 use parking_lot::RwLock;
 
@@ -13,32 +12,31 @@ use super::io::IO;
 /// Standard System File that implement the trait `IO`
 pub struct SystemFile {
     /// System File Descriptor
-    fd: Arc<RwLock<File>>,
+    fd: RwLock<File>,
 }
 
 impl SystemFile {
     pub fn new(filename: impl AsRef<Path>) -> BCResult<Self> {
-        println!("{}", filename.as_ref().display());
-
         OpenOptions::new()
             .create(true)
             .read(true)
             .append(true)
             .open(filename)
             .map(|file| Self {
-                fd: Arc::new(RwLock::new(file)),
+                fd: RwLock::new(file),
             })
             .map_err(Errors::OpenDataFileFailed)
     }
 }
 
 impl IO for SystemFile {
-    fn write(&self, buf: &[u8]) -> BCResult<usize> {
+    fn write(&self, buf: &[u8]) -> BCResult<u32> {
         let mut fd = self.fd.write();
-        fd.write(buf).map_err(Errors::WriteDataFileFaild)
+        let write_size = fd.write(buf).map_err(Errors::WriteDataFileFaild)?;
+        Ok(write_size as u32)
     }
 
-    fn read(&self, buf: &mut [u8], offset: usize) -> BCResult<usize> {
+    fn read(&self, buf: &mut [u8], offset: u32) -> BCResult<usize> {
         let fd = self.fd.read();
         fd.read_at(buf, offset as u64)
             .map_err(Errors::ReadDataFileFaild)
@@ -55,7 +53,7 @@ impl TryFrom<File> for SystemFile {
 
     fn try_from(value: File) -> Result<Self, Self::Error> {
         Ok(Self {
-            fd: Arc::new(RwLock::new(value)),
+            fd: RwLock::new(value),
         })
     }
 }
