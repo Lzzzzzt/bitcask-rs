@@ -10,7 +10,7 @@ use crate::data::log_record::{
 };
 use crate::errors::{BCResult, Errors};
 use crate::index::{create_indexer, Indexer};
-use crate::utils::{check_key_valid, Key, Value};
+use crate::utils::check_key_valid;
 use crate::{DB_DATA_FILE_SUFFIX, DB_MERGE_FIN_FILE};
 
 pub struct DBEngine {
@@ -76,7 +76,9 @@ impl DBEngine {
     /// + `value`: Bytes
     /// ## Return Value
     /// will return `Err` when `key` is empty
-    pub fn put(&self, key: Key, value: Value) -> BCResult<()> {
+    pub fn put<T: Into<Vec<u8>>>(&self, key: T, value: T) -> BCResult<()> {
+        let key = key.into();
+        let value = value.into();
         // make sure the key is valid
         check_key_valid(&key)?;
 
@@ -98,7 +100,8 @@ impl DBEngine {
     /// + `key`: Bytes, should not be empty
     /// ## Return Value
     /// will return `Err` when `key` is empty
-    pub fn get(&self, key: &[u8]) -> BCResult<Vec<u8>> {
+    pub fn get<T: AsRef<[u8]>>(&self, key: T) -> BCResult<Vec<u8>> {
+        let key = key.as_ref();
         // make sure the key is valid
         check_key_valid(key)?;
 
@@ -122,7 +125,9 @@ impl DBEngine {
     /// Delete the key-value set
     /// ## Parameter
     /// + `key`: Bytes, should not be empty
-    pub fn del(&self, key: &[u8]) -> BCResult<()> {
+    pub fn del<T: AsRef<[u8]>>(&self, key: T) -> BCResult<()> {
+        let key = key.as_ref();
+        
         check_key_valid(key)?;
 
         match self.index.get(key) {
@@ -333,7 +338,7 @@ mod tests {
         // put one normal record
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.get(key.as_bytes());
         assert!(res.is_ok());
@@ -342,7 +347,7 @@ mod tests {
 
         // put the same key with different value
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.get(key.as_bytes());
         assert!(res.is_ok());
@@ -350,14 +355,14 @@ mod tests {
         assert_eq!(value.as_bytes(), res_value);
 
         // key is empty
-        let res = engine.put(Default::default(), value.clone().into());
+        let res = engine.put(Default::default(), value.clone());
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Errors::KeyEmpty));
 
         // value is empty
         let key: String = word.fake();
         let value: String = Default::default();
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.get(key.as_bytes());
         assert!(res.is_ok());
@@ -368,7 +373,7 @@ mod tests {
         for _ in 0..200000 {
             let key: String = word.fake();
             let value: String = sentence.fake();
-            engine.put(key.into(), value.into())?;
+            engine.put(key, value)?;
         }
 
         // reboot, then put
@@ -378,7 +383,7 @@ mod tests {
 
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.get(key.as_bytes());
         assert!(res.is_ok());
@@ -398,7 +403,7 @@ mod tests {
         // get one normal record
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.get(key.as_bytes());
         assert!(res.is_ok());
@@ -411,7 +416,7 @@ mod tests {
 
         // read after value is repeated put
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.get(key.as_bytes());
         assert!(res.is_ok());
@@ -420,7 +425,7 @@ mod tests {
         // read after delete
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.del(key.as_bytes());
         assert!(res.is_ok());
@@ -431,12 +436,12 @@ mod tests {
         // read from old data files instead of active file
         let old_key: String = "111".into();
         let old_value: String = "222".into();
-        engine.put(old_key.clone().into(), old_value.clone().into())?;
+        engine.put(old_key.clone(), old_value.clone())?;
 
         for _ in 0..200000 {
             let key: String = word.fake();
             let value: String = sentence.fake();
-            engine.put(key.into(), value.into())?;
+            engine.put(key, value)?;
         }
         let res = engine.get(old_key.as_bytes());
         assert!(res.is_ok());
@@ -461,7 +466,7 @@ mod tests {
         // delete a exist key
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
 
         let res = engine.del(key.as_bytes());
@@ -484,13 +489,13 @@ mod tests {
         let key: String = word.fake();
         let value = sentence.fake::<String>();
 
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
 
         let res = engine.del(key.as_bytes());
         assert!(res.is_ok());
 
-        let res = engine.put(key.clone().into(), value.clone().into());
+        let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
 
         let res = engine.get(key.as_bytes());

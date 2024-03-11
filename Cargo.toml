@@ -15,7 +15,7 @@ thiserror = "1.0.57"
 bytes = "1.5.0"
 prost = "0.12.3"
 crc32fast = "1.4.0"
-
+crossbeam-skiplist = "0.1.3"
 
 [dev-dependencies]
 rand = "0.8.5"
