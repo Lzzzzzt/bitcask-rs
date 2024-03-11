@@ -47,6 +47,12 @@ pub enum Errors {
     // Batch
     #[error("Exceed the max batch size, current is: {0}")]
     ExceedMaxBatchSize(usize),
+
+    // Merge
+    #[error("DB Engine is merging")]
+    DBIsMerging,
+    #[error("Create DB directory failed: path is: {0}, due to: {1}")]
+    CreateMergeDirFailed(String, std::io::Error),
 }
 
 pub type BCResult<T> = std::result::Result<T, Errors>;

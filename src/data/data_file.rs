@@ -1,8 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::errors::BCResult;
 use crate::file::io::{create_io_manager, IO};
-use crate::DB_DATA_FILE_SUFFIX;
+use crate::{DB_DATA_FILE_SUFFIX, DB_HINT_FILE, DB_MERGE_FIN_FILE};
 
 use super::log_record::{LogRecord, ReadLogRecord};
 
@@ -13,18 +13,34 @@ pub struct DataFile {
 }
 
 impl DataFile {
-    pub fn new(directory: impl AsRef<Path>, id: u32) -> BCResult<Self> {
+    pub fn new<P: AsRef<Path>>(directory: P, id: u32) -> BCResult<Self> {
         // construct complete filename
-        let mut filename = directory.as_ref().to_path_buf();
-        filename.push(format!("{:09}.{}", id, DB_DATA_FILE_SUFFIX));
-
-        // init io manager
-        let io = create_io_manager(filename)?;
+        let filename = data_file_name(directory, id);
 
         Ok(Self {
             id,
             write_offset: 0,
-            io: Box::new(io),
+            io: create_io_manager(filename)?,
+        })
+    }
+
+    pub fn hint_file<P: AsRef<Path>>(path: P) -> BCResult<Self> {
+        let filename = path.as_ref().join(DB_HINT_FILE);
+
+        Ok(Self {
+            id: 0,
+            write_offset: 0,
+            io: create_io_manager(filename)?,
+        })
+    }
+
+    pub fn merge_finish_file<P: AsRef<Path>>(path: P) -> BCResult<Self> {
+        let filename = path.as_ref().join(DB_MERGE_FIN_FILE);
+
+        Ok(Self {
+            id: 0,
+            write_offset: 0,
+            io: create_io_manager(filename)?,
         })
     }
 
@@ -43,6 +59,11 @@ impl DataFile {
     pub fn sync(&self) -> BCResult<()> {
         self.io.sync()
     }
+}
+
+pub(crate) fn data_file_name<P: AsRef<Path>>(p: P, id: u32) -> PathBuf {
+    p.as_ref()
+        .join(format!("{:09}.{}", id, DB_DATA_FILE_SUFFIX))
 }
 
 #[cfg(test)]

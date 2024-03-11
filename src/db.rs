@@ -11,17 +11,18 @@ use crate::data::log_record::{
 use crate::errors::{BCResult, Errors};
 use crate::index::{create_indexer, Indexer};
 use crate::utils::{check_key_valid, Key, Value};
-use crate::DB_DATA_FILE_SUFFIX;
+use crate::{DB_DATA_FILE_SUFFIX, DB_MERGE_FIN_FILE};
 
 pub struct DBEngine {
-    config: Config,
     /// Only used for update index
     fids: Vec<u32>,
-    active: RwLock<DataFile>,
+    pub(crate) config: Config,
+    pub(crate) active: RwLock<DataFile>,
     pub(crate) index: Box<dyn Indexer>,
-    archive: RwLock<HashMap<u32, DataFile>>,
+    pub(crate) archive: RwLock<HashMap<u32, DataFile>>,
     pub(crate) batch_lock: Mutex<()>,
     pub(crate) batch_seq: AtomicU64,
+    pub(crate) merge_lock: Mutex<()>,
 }
 
 impl DBEngine {
@@ -34,6 +35,8 @@ impl DBEngine {
         fs::create_dir_all(&config.db_path).map_err(|e| {
             Errors::CreateDBDirFailed(config.db_path.to_string_lossy().to_string(), e)
         })?;
+
+        Self::load_merged_file(&config.db_path)?;
 
         let mut data_files = load_data_file(&config.db_path)?;
 
@@ -56,6 +59,7 @@ impl DBEngine {
             config,
             batch_lock: Mutex::new(()),
             batch_seq: AtomicU64::new(1),
+            merge_lock: Mutex::new(()),
         };
 
         // put the active file id into file ids
@@ -182,6 +186,23 @@ impl DBEngine {
 
     /// load index information from data file, will traverse all the data file, then process the record in order
     fn load_index_from_data_file(&mut self) -> BCResult<()> {
+        if self.fids.is_empty() {
+            return Ok(());
+        }
+
+        let mut merged = false;
+        let mut unmerged_fid = 0;
+        let merge_finish_file = self.config.db_path.join(DB_MERGE_FIN_FILE);
+
+        if merge_finish_file.is_file() {
+            let merge_finish_file = DataFile::merge_finish_file(merge_finish_file)?;
+            let ReadLogRecord { record, .. } = merge_finish_file.read_record(0)?;
+            let fid_bytes = record.value;
+            unmerged_fid =
+                u32::from_be_bytes([fid_bytes[0], fid_bytes[1], fid_bytes[2], fid_bytes[3]]);
+            merged = true;
+        }
+
         // self.file_ids will at least have the active file id, so unwarp directly.
         let (active_file_id, old_file_ids) = self.fids.split_last().unwrap();
 
@@ -189,6 +210,10 @@ impl DBEngine {
 
         // update index from old file
         for &id in old_file_ids {
+            if merged && id < unmerged_fid {
+                continue;
+            }
+
             self.update_index_batched(id, &mut batched_record)?;
         }
 
@@ -291,23 +316,12 @@ fn load_data_file(dir: impl AsRef<Path>) -> BCResult<Vec<DataFile>> {
 #[cfg(test)]
 mod tests {
 
-    use std::path::PathBuf;
-
     use fake::faker::lorem::en::{Sentence, Word};
     use fake::Fake;
 
+    use crate::utils::tests::open;
+
     use super::*;
-
-    fn open(temp_dir: PathBuf) -> DBEngine {
-        let config = Config {
-            file_size_threshold: 64 * 1024 * 1024,
-            db_path: temp_dir,
-            sync_write: false,
-            index_type: crate::config::IndexType::BTree,
-        };
-
-        DBEngine::open(config).unwrap()
-    }
 
     #[test]
     fn put() -> BCResult<()> {

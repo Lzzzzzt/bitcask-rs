@@ -21,6 +21,15 @@ impl RecordPosition {
     pub(crate) fn new(fid: u32, offset: u32) -> Self {
         Self { fid, offset }
     }
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut res = Vec::with_capacity(8);
+
+        res.extend_from_slice(&self.fid.to_be_bytes());
+        res.extend_from_slice(&self.offset.to_be_bytes());
+
+        res
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -104,16 +113,24 @@ impl LogRecord {
 
     pub fn batch_finished(seq: u64) -> Self {
         Self {
-            key: "Batch Finish".into(),
+            key: "BF".into(),
             value: Default::default(),
             record_type: RecordType::Commited,
             batch_state: seq.into(),
         }
     }
 
+    pub fn merge_finished(unmerged: u32) -> Self {
+        Self::normal("MF".into(), unmerged.to_be_bytes().into())
+    }
+
     pub fn enable_transaction(mut self, seq_num: u64) -> Self {
         self.batch_state = seq_num.into();
         self
+    }
+
+    pub fn disable_transaction(&mut self) {
+        self.batch_state = RecordBatchState::Disable
     }
 
     pub fn encode(&self) -> Vec<u8> {
