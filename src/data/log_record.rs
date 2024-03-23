@@ -9,7 +9,7 @@ use crate::utils::{Key, Value};
 
 /// ## Data Position Index
 /// `LogRecordPosition` will describe data store in which position.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct RecordPosition {
     /// file id, distinguish the data store in which file
     pub(crate) fid: u32,
@@ -29,6 +29,15 @@ impl RecordPosition {
         res.extend_from_slice(&self.offset.to_be_bytes());
 
         res
+    }
+
+    pub(crate) fn decode(mut data: Vec<u8>) -> Self {
+        let offset = data.split_off(4);
+        let fid = data;
+        Self {
+            fid: u32::from_be_bytes([fid[0], fid[1], fid[2], fid[3]]),
+            offset: u32::from_be_bytes([offset[0], offset[1], offset[2], offset[3]]),
+        }
     }
 }
 
@@ -228,7 +237,7 @@ impl ReadLogRecord {
         let crc = u32::from_be_bytes([crc[0], crc[1], crc[2], crc[3]]);
         value_key.truncate(key_size + value_size);
 
-        // create new key/value just copy the value vec
+        // create new key/value just copy the key vec
         let key = value_key.split_off(value_size);
         let value = value_key;
 

@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use crate::errors::{BCResult, Errors};
 
 pub type Key = Vec<u8>;
@@ -12,6 +14,15 @@ pub fn check_key_valid(key: &[u8]) -> BCResult<()> {
     Ok(())
 }
 
+#[inline(always)]
+pub fn key_hash(key: &[u8], num: u8) -> usize {
+    (key[0] % num) as usize
+}
+
+pub(crate) fn merge_path<P: AsRef<Path>>(p: P) -> PathBuf {
+    p.as_ref().join(".merge")
+}
+
 #[cfg(test)]
 pub mod tests {
     use std::path::PathBuf;
@@ -24,6 +35,7 @@ pub mod tests {
             db_path: temp_dir,
             sync_write: false,
             index_type: crate::config::IndexType::BTree,
+            index_num: 4,
         };
 
         DBEngine::open(config).unwrap()
