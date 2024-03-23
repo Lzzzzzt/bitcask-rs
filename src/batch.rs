@@ -46,9 +46,11 @@ impl<'a> WriteBatch<'a> {
 
         let mut pending = self.pending.write();
 
+        let real_index = self.engine.get_index(key);
+
         // if the data that store in this batch but not in the engine,
         // the delete the data in the batch
-        if self.engine.index.get(key).is_none() && pending.contains_key(key) {
+        if real_index.get(key).is_none() && pending.contains_key(key) {
             pending.remove(key);
             return Ok(());
         }

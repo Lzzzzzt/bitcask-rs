@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicU64;
-use std::{collections::HashMap, fs, path::Path};
+use std::{fs, path::Path};
 
+use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
 
 use crate::config::Config;
@@ -10,7 +11,7 @@ use crate::data::log_record::{
 };
 use crate::errors::{BCResult, Errors};
 use crate::index::{create_indexer, Indexer};
-use crate::utils::check_key_valid;
+use crate::utils::{check_key_valid, key_hash, merge_path};
 use crate::{DB_DATA_FILE_SUFFIX, DB_MERGE_FIN_FILE};
 
 pub struct DBEngine {
@@ -18,7 +19,7 @@ pub struct DBEngine {
     fids: Vec<u32>,
     pub(crate) config: Config,
     pub(crate) active: RwLock<DataFile>,
-    pub(crate) index: Box<dyn Indexer>,
+    pub(crate) index: Vec<Box<dyn Indexer>>,
     pub(crate) archive: RwLock<HashMap<u32, DataFile>>,
     pub(crate) batch_lock: Mutex<()>,
     pub(crate) batch_seq: AtomicU64,
@@ -40,21 +41,22 @@ impl DBEngine {
 
         let mut data_files = load_data_file(&config.db_path)?;
 
-        let active_file = match data_files.pop() {
-            Some(file) => file,
-            None => DataFile::new(&config.db_path, 0)?,
-        };
+        let mut active_file = data_files
+            .pop()
+            .unwrap_or(DataFile::new_active(&config.db_path, 0)?);
+
+        active_file.activate()?;
 
         let data_fids: Vec<u32> = data_files.iter().map(|f| f.id).collect();
 
-        let file_with_id = data_fids.iter().cloned().zip(data_files);
+        let file_with_id = data_fids.iter().copied().zip(data_files).collect();
 
         let active_file_id = active_file.id;
 
         let mut engine = Self {
-            index: Box::new(create_indexer(&config.index_type)),
+            index: create_indexer(&config.index_type, config.index_num),
             active: RwLock::new(active_file),
-            archive: RwLock::new(HashMap::from_iter(file_with_id)),
+            archive: RwLock::new(file_with_id),
             fids: data_fids,
             config,
             batch_lock: Mutex::new(()),
@@ -65,7 +67,7 @@ impl DBEngine {
         // put the active file id into file ids
         engine.fids.push(active_file_id);
 
-        engine.load_index_from_data_file()?;
+        engine.load_index()?;
 
         Ok(engine)
     }
@@ -89,7 +91,7 @@ impl DBEngine {
         let record_positoin = self.append_log_record(&record)?;
 
         // update in-memory index
-        self.index
+        self.get_index(&record.key)
             .put(record.key, record_positoin)
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
         Ok(())
@@ -106,7 +108,8 @@ impl DBEngine {
         check_key_valid(key)?;
 
         // fecth log record positon with key
-        let record_position = self.index.get(key).ok_or(Errors::KeyNotFound)?;
+        let real_index = self.get_index(key);
+        let record_position = real_index.get(key).ok_or(Errors::KeyNotFound)?;
 
         let target_file_id = record_position.fid;
 
@@ -127,10 +130,11 @@ impl DBEngine {
     /// + `key`: Bytes, should not be empty
     pub fn del<T: AsRef<[u8]>>(&self, key: T) -> BCResult<()> {
         let key = key.as_ref();
-        
+
         check_key_valid(key)?;
 
-        match self.index.get(key) {
+        let real_index = self.get_index(key);
+        match real_index.get(key) {
             Some(_) => (),
             None => return Ok(()),
         };
@@ -139,7 +143,7 @@ impl DBEngine {
 
         self.append_log_record(&record)?;
 
-        self.index
+        real_index
             .del(key)
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
 
@@ -165,10 +169,13 @@ impl DBEngine {
 
             let current_file_id = active_file.id;
             // create new active file and store active file into old file
-            let current_active_file = std::mem::replace(
+            let mut current_active_file = std::mem::replace(
                 &mut *active_file,
-                DataFile::new(db_path, current_file_id + 1)?,
+                DataFile::new_active(db_path, current_file_id + 1)?,
             );
+
+            current_active_file.deactivate()?;
+
             self.archive
                 .write()
                 .insert(current_file_id, current_active_file);
@@ -189,8 +196,39 @@ impl DBEngine {
         })
     }
 
+    fn load_index(&self) -> BCResult<()> {
+        self.load_index_from_hint_file()?;
+        self.load_index_from_data_file()
+    }
+
+    fn load_index_from_hint_file(&self) -> BCResult<()> {
+        let path = merge_path(&self.config.db_path);
+
+        if !path.is_dir() {
+            return Ok(());
+        }
+
+        let hint_file = DataFile::hint_file(path)?;
+        let mut offset = 0;
+
+        loop {
+            match hint_file.read_record(offset) {
+                Ok(ReadLogRecord { record, size }) => {
+                    offset += size;
+
+                    self.get_index(&record.key)
+                        .put(record.key, RecordPosition::decode(record.value))?;
+                }
+                Err(Errors::DataFileEndOfFile) => break,
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(())
+    }
+
     /// load index information from data file, will traverse all the data file, then process the record in order
-    fn load_index_from_data_file(&mut self) -> BCResult<()> {
+    fn load_index_from_data_file(&self) -> BCResult<()> {
         if self.fids.is_empty() {
             return Ok(());
         }
@@ -271,9 +309,11 @@ impl DBEngine {
         record: LogRecord,
         record_position: RecordPosition,
     ) -> BCResult<()> {
+        let real_index = self.get_index(&record.key);
+
         match record.record_type {
-            RecordType::Deleted => self.index.del(&record.key),
-            RecordType::Normal => self.index.put(record.key, record_position),
+            RecordType::Deleted => real_index.del(&record.key),
+            RecordType::Normal => real_index.put(record.key, record_position),
             RecordType::Commited => unreachable!(),
         }
     }
@@ -287,6 +327,13 @@ impl DBEngine {
         } else {
             old_files.get(&id).unwrap().read_record(offset)
         }
+    }
+
+    pub(crate) fn get_index(&self, key: &[u8]) -> &dyn Indexer {
+        self.index
+            .get(key_hash(key, self.config.index_num))
+            .unwrap()
+            .as_ref()
     }
 }
 

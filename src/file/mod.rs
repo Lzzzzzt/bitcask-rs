@@ -1,3 +1,3 @@
-mod system_file;
+pub mod system_file;
 
 pub mod io;

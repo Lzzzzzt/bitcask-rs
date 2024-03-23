@@ -5,16 +5,9 @@ use std::collections::BTreeMap;
 use super::Indexer;
 
 /// ## in-memory data using `BTreeMap`
+#[derive(Default, Debug)]
 pub struct BTree {
     inner: RwLock<BTreeMap<Key, RecordPosition>>,
-}
-
-impl BTree {
-    pub(crate) fn new() -> Self {
-        Self {
-            inner: RwLock::new(BTreeMap::new()),
-        }
-    }
 }
 
 impl Indexer for BTree {
@@ -42,12 +35,12 @@ mod tests {
 
     #[test]
     fn put() {
-        let bt = BTree::new();
+        let bt = BTree::default();
         assert!(bt.put("Hello".into(), RecordPosition::new(0, 1)).is_ok());
     }
     #[test]
     fn get() -> BCResult<()> {
-        let bt = BTree::new();
+        let bt = BTree::default();
         bt.put("Hello".into(), RecordPosition::new(0, 1))?;
 
         let key1: Vec<u8> = "Hello".into();
@@ -61,7 +54,7 @@ mod tests {
     }
     #[test]
     fn del() -> BCResult<()> {
-        let bt = BTree::new();
+        let bt = BTree::default();
         bt.put("Hello".into(), RecordPosition::new(0, 1))?;
 
         assert_eq!(bt.get(b"Hello"), Some(RecordPosition::new(0, 1)));

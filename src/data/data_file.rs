@@ -9,6 +9,7 @@ use super::log_record::{LogRecord, ReadLogRecord};
 pub struct DataFile {
     pub(crate) id: u32,
     pub(crate) write_offset: u32,
+    pub(crate) active: bool,
     io: Box<dyn IO>,
 }
 
@@ -21,6 +22,18 @@ impl DataFile {
             id,
             write_offset: 0,
             io: create_io_manager(filename)?,
+            active: false,
+        })
+    }
+
+    pub fn new_active<P: AsRef<Path>>(directory: P, id: u32) -> BCResult<Self> {
+        let filename = data_file_name(directory, id);
+
+        Ok(Self {
+            id,
+            write_offset: 0,
+            io: create_io_manager(filename)?,
+            active: true,
         })
     }
 
@@ -31,6 +44,7 @@ impl DataFile {
             id: 0,
             write_offset: 0,
             io: create_io_manager(filename)?,
+            active: true,
         })
     }
 
@@ -41,6 +55,7 @@ impl DataFile {
             id: 0,
             write_offset: 0,
             io: create_io_manager(filename)?,
+            active: false,
         })
     }
 
@@ -54,6 +69,26 @@ impl DataFile {
     /// read `ReadLogRecord` from data file by offset
     pub fn read_record(&self, offset: u32) -> BCResult<ReadLogRecord> {
         ReadLogRecord::decode(self.io.as_ref(), offset)
+    }
+
+    /// TODO
+    pub fn deactivate(&mut self) -> BCResult<()> {
+        if !self.active {
+            return Ok(());
+        }
+
+        self.active = false;
+        todo!()
+    }
+
+    /// TODO
+    pub fn activate(&mut self) -> BCResult<()> {
+        if self.active {
+            return Ok(());
+        }
+
+        self.active = true;
+        Ok(())
     }
 
     pub fn sync(&self) -> BCResult<()> {

@@ -12,6 +12,8 @@ pub struct Config {
     pub sync_write: bool,
 
     pub index_type: IndexType,
+
+    pub index_num: u8,
 }
 
 impl Config {
@@ -30,6 +32,7 @@ impl Config {
 pub enum IndexType {
     BTree,
     SkipList,
+    HashMap,
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +61,7 @@ mod tests {
                 db_path: path,
                 sync_write: false,
                 index_type: crate::config::IndexType::BTree,
+                index_num: 4,
             }
         }
     }

@@ -1,20 +1,16 @@
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use parking_lot::RwLock;
 
-use crate::{
-    data::{
-        data_file::{data_file_name, DataFile},
-        log_record::{LogRecord, ReadLogRecord, RecordPosition},
-    },
-    db::DBEngine,
-    errors::{BCResult, Errors},
-    DB_DATA_FILE_SUFFIX, DB_MERGE_FIN_FILE,
-};
+use crate::data::data_file::{data_file_name, DataFile};
+use crate::data::log_record::{LogRecord, ReadLogRecord, RecordPosition};
+use crate::db::DBEngine;
+use crate::errors::{BCResult, Errors};
+use crate::utils::merge_path;
+use crate::DB_DATA_FILE_SUFFIX;
+use crate::DB_MERGE_FIN_FILE;
 
 impl DBEngine {
     pub fn merge(&self) -> BCResult<()> {
@@ -46,7 +42,9 @@ impl DBEngine {
                     Err(e) => return Err(e),
                 };
 
-                if let Some(pos) = self.index.get(&record.key) {
+                let real_index = self.get_index(&record.key);
+
+                if let Some(pos) = real_index.get(&record.key) {
                     if pos.fid == file.id && pos.offset == offset {
                         record.disable_transaction();
                         let position = merge_engine.append_log_record(&record)?;
@@ -202,10 +200,6 @@ impl MergeEngine {
     pub fn sync(&self) -> BCResult<()> {
         self.active.read().sync()
     }
-}
-
-pub(crate) fn merge_path<P: AsRef<Path>>(p: P) -> PathBuf {
-    p.as_ref().join(".merge")
 }
 
 #[cfg(test)]
