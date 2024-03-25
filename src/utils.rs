@@ -27,17 +27,18 @@ pub(crate) fn merge_path<P: AsRef<Path>>(p: P) -> PathBuf {
 pub mod tests {
     use std::path::PathBuf;
 
-    use crate::{config::Config, db::DBEngine};
+    use crate::{config::Config, db::DBEngine, errors::BCResult};
 
-    pub fn open(temp_dir: PathBuf) -> DBEngine {
+    pub fn open(temp_dir: PathBuf) -> BCResult<DBEngine> {
         let config = Config {
             file_size_threshold: 64 * 1024 * 1024,
             db_path: temp_dir,
             sync_write: false,
+            bytes_per_sync: 0,
             index_type: crate::config::IndexType::BTree,
             index_num: 4,
         };
 
-        DBEngine::open(config).unwrap()
+        DBEngine::open(config)
     }
 }

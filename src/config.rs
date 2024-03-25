@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::errors::{BCResult, Errors};
 
 /// the config for the db
+#[derive(Debug)]
 pub struct Config {
     // db directory path
     pub db_path: PathBuf,
@@ -10,6 +11,8 @@ pub struct Config {
     pub file_size_threshold: u32,
     // if true, db engine will sync every write op, otherwise, just sync when file size is bigger then data file size
     pub sync_write: bool,
+
+    pub bytes_per_sync: usize,
 
     pub index_type: IndexType,
 
@@ -29,6 +32,7 @@ impl Config {
     }
 }
 
+#[derive(Debug)]
 pub enum IndexType {
     BTree,
     SkipList,
@@ -60,6 +64,7 @@ mod tests {
                 file_size_threshold: 64 * 1024 * 1024,
                 db_path: path,
                 sync_write: false,
+                bytes_per_sync: 0,
                 index_type: crate::config::IndexType::BTree,
                 index_num: 4,
             }

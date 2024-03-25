@@ -27,6 +27,10 @@ impl Indexer for BTree {
         map.remove(key).ok_or(Errors::KeyNotFound)?;
         Ok(())
     }
+
+    fn exist(&self, key: &[u8]) -> bool {
+        self.inner.read().contains_key(key)
+    }
 }
 
 #[cfg(test)]
@@ -36,17 +40,17 @@ mod tests {
     #[test]
     fn put() {
         let bt = BTree::default();
-        assert!(bt.put("Hello".into(), RecordPosition::new(0, 1)).is_ok());
+        assert!(bt.put("Hello".into(), RecordPosition::new(0, 1, 5)).is_ok());
     }
     #[test]
     fn get() -> BCResult<()> {
         let bt = BTree::default();
-        bt.put("Hello".into(), RecordPosition::new(0, 1))?;
+        bt.put("Hello".into(), RecordPosition::new(0, 1, 5))?;
 
         let key1: Vec<u8> = "Hello".into();
         let key2: Vec<u8> = "Hell0".into();
 
-        assert_eq!(bt.get(&key1), Some(RecordPosition::new(0, 1)));
+        assert_eq!(bt.get(&key1), Some(RecordPosition::new(0, 1, 5)));
 
         assert_eq!(bt.get(&key2), None);
 
@@ -55,9 +59,9 @@ mod tests {
     #[test]
     fn del() -> BCResult<()> {
         let bt = BTree::default();
-        bt.put("Hello".into(), RecordPosition::new(0, 1))?;
+        bt.put("Hello".into(), RecordPosition::new(0, 1, 5))?;
 
-        assert_eq!(bt.get(b"Hello"), Some(RecordPosition::new(0, 1)));
+        assert_eq!(bt.get(b"Hello"), Some(RecordPosition::new(0, 1, 5)));
 
         assert!(bt.del(b"Hello").is_ok());
         assert_eq!(bt.get(b"Hello"), None);

@@ -1,6 +1,10 @@
 use crossbeam_skiplist::SkipMap;
 
-use crate::{data::log_record::RecordPosition, errors::{BCResult, Errors}, utils::Key};
+use crate::{
+    data::log_record::RecordPosition,
+    errors::{BCResult, Errors},
+    utils::Key,
+};
 
 use super::Indexer;
 
@@ -22,5 +26,9 @@ impl Indexer for SkipList {
     fn del(&self, key: &[u8]) -> BCResult<()> {
         self.inner.remove(key).ok_or(Errors::KeyNotFound)?;
         Ok(())
+    }
+
+    fn exist(&self, key: &[u8]) -> bool {
+        self.inner.contains_key(key)
     }
 }

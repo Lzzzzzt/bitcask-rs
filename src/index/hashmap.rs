@@ -26,4 +26,8 @@ impl Indexer for HashMap {
         map.remove(key);
         Ok(())
     }
+
+    fn exist(&self, key: &[u8]) -> bool {
+        self.inner.read().contains_key(key)
+    }
 }

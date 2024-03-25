@@ -1,6 +1,8 @@
-use std::sync::atomic::AtomicU64;
+use std::fs::File;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{fs, path::Path};
 
+use fs4::FileExt;
 use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
 
@@ -12,18 +14,21 @@ use crate::data::log_record::{
 use crate::errors::{BCResult, Errors};
 use crate::index::{create_indexer, Indexer};
 use crate::utils::{check_key_valid, key_hash, merge_path};
-use crate::{DB_DATA_FILE_SUFFIX, DB_MERGE_FIN_FILE};
+use crate::{DB_DATA_FILE_SUFFIX, DB_FILE_LOCK, DB_MERGE_FIN_FILE};
 
 pub struct DBEngine {
     /// Only used for update index
     fids: Vec<u32>,
     pub(crate) config: Config,
     pub(crate) active: RwLock<DataFile>,
+    pub(crate) read_active: RwLock<DataFile>,
     pub(crate) index: Vec<Box<dyn Indexer>>,
     pub(crate) archive: RwLock<HashMap<u32, DataFile>>,
     pub(crate) batch_lock: Mutex<()>,
     pub(crate) batch_seq: AtomicU64,
     pub(crate) merge_lock: Mutex<()>,
+    pub(crate) lock_file: File,
+    pub(crate) bytes_written: AtomicUsize,
 }
 
 impl DBEngine {
@@ -37,15 +42,26 @@ impl DBEngine {
             Errors::CreateDBDirFailed(config.db_path.to_string_lossy().to_string(), e)
         })?;
 
+        // file lock, make sure the db dir is used by one engine
+        let lock_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(config.db_path.join(DB_FILE_LOCK))
+            .map_err(|_| Errors::OpenLockFileFailed)?;
+
+        lock_file
+            .try_lock_exclusive()
+            .map_err(|_| Errors::DBIsInUsing)?;
+
         Self::load_merged_file(&config.db_path)?;
 
         let mut data_files = load_data_file(&config.db_path)?;
 
-        let mut active_file = data_files
+        let active_file = data_files
             .pop()
-            .unwrap_or(DataFile::new_active(&config.db_path, 0)?);
-
-        active_file.activate()?;
+            .unwrap_or(DataFile::new(&config.db_path, 0)?);
 
         let data_fids: Vec<u32> = data_files.iter().map(|f| f.id).collect();
 
@@ -53,15 +69,20 @@ impl DBEngine {
 
         let active_file_id = active_file.id;
 
+        let read_active_file = DataFile::new(&config.db_path, active_file_id)?;
+
         let mut engine = Self {
             index: create_indexer(&config.index_type, config.index_num),
             active: RwLock::new(active_file),
+            read_active: RwLock::new(read_active_file),
             archive: RwLock::new(file_with_id),
             fids: data_fids,
             config,
             batch_lock: Mutex::new(()),
             batch_seq: AtomicU64::new(1),
             merge_lock: Mutex::new(()),
+            lock_file,
+            bytes_written: AtomicUsize::new(0),
         };
 
         // put the active file id into file ids
@@ -70,6 +91,16 @@ impl DBEngine {
         engine.load_index()?;
 
         Ok(engine)
+    }
+
+    pub fn close(&self) -> BCResult<()> {
+        if !self.config.db_path.is_dir() {
+            return Ok(());
+        }
+
+        self.sync()?;
+        self.lock_file.unlock().unwrap();
+        Ok(())
     }
 
     /// Store the key-value set
@@ -108,14 +139,10 @@ impl DBEngine {
         check_key_valid(key)?;
 
         // fecth log record positon with key
-        let real_index = self.get_index(key);
-        let record_position = real_index.get(key).ok_or(Errors::KeyNotFound)?;
-
-        let target_file_id = record_position.fid;
+        let record_position = self.get_index(key).get(key).ok_or(Errors::KeyNotFound)?;
 
         // get record
-        let ReadLogRecord { record, .. } =
-            self.get_record(target_file_id, record_position.offset)?;
+        let ReadLogRecord { record, .. } = self.get_record_with_position(record_position)?;
 
         // if this record is deleted, return `KeyNotFound`
         if matches!(record.record_type, RecordType::Deleted) {
@@ -133,17 +160,17 @@ impl DBEngine {
 
         check_key_valid(key)?;
 
-        let real_index = self.get_index(key);
-        match real_index.get(key) {
-            Some(_) => (),
-            None => return Ok(()),
-        };
+        let index = self.get_index(key);
+
+        if !index.exist(key) {
+            return Ok(());
+        }
 
         let record = LogRecord::deleted(key.to_vec());
 
         self.append_log_record(&record)?;
 
-        real_index
+        index
             .del(key)
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
 
@@ -157,42 +184,45 @@ impl DBEngine {
     pub(crate) fn append_log_record(&self, record: &LogRecord) -> BCResult<RecordPosition> {
         let db_path = &self.config.db_path;
 
-        let encoded_record_len = record.calculate_encoded_length() as u32;
+        let record_len = record.calculate_encoded_length() as u32;
 
         // fetch active file
-        let mut active_file = self.active.write();
+        let mut active = self.active.write();
 
         // check current active file size is small then config.data_file_size
-        if active_file.write_offset + encoded_record_len > self.config.file_size_threshold {
+        if active.write_offset + record_len > self.config.file_size_threshold {
             // sync active file
-            active_file.sync()?;
+            active.sync()?;
 
-            let current_file_id = active_file.id;
+            let pre_fid = active.id;
             // create new active file and store active file into old file
-            let mut current_active_file = std::mem::replace(
-                &mut *active_file,
-                DataFile::new_active(db_path, current_file_id + 1)?,
-            );
+            let pre_active = std::mem::replace(&mut *active, DataFile::new(db_path, pre_fid + 1)?);
 
-            current_active_file.deactivate()?;
+            // update the active file for read
+            *self.read_active.write() = DataFile::new(db_path, pre_fid + 1)?;
 
-            self.archive
-                .write()
-                .insert(current_file_id, current_active_file);
+            self.archive.write().insert(pre_fid, pre_active);
         }
 
         // append record into active file
-        let write_offset = active_file.write_offset;
-        active_file.write_record(record)?;
+        let write_offset = active.write_offset;
+        active.write_record(record)?;
 
-        if self.config.sync_write {
-            active_file.sync()?;
+        self.bytes_written
+            .fetch_add(record_len as usize, Ordering::SeqCst);
+
+        if self.config.sync_write
+            && self.config.bytes_per_sync > 0
+            && self.bytes_written.load(Ordering::SeqCst) / self.config.bytes_per_sync >= 1
+        {
+            active.sync()?;
         }
 
         // construct in-memory index infomation
         Ok(RecordPosition {
-            fid: active_file.id,
+            fid: active.id,
             offset: write_offset,
+            size: record_len,
         })
     }
 
@@ -217,7 +247,7 @@ impl DBEngine {
                     offset += size;
 
                     self.get_index(&record.key)
-                        .put(record.key, RecordPosition::decode(record.value))?;
+                        .put(record.key, RecordPosition::decode(&record.value))?;
                 }
                 Err(Errors::DataFileEndOfFile) => break,
                 Err(e) => return Err(e),
@@ -273,6 +303,8 @@ impl DBEngine {
         batched: &mut HashMap<u64, Vec<LogRecord>>,
     ) -> BCResult<u32> {
         let mut offset = 0;
+        let mut current_seq_no = self.batch_seq.load(Ordering::SeqCst);
+
         loop {
             let (record_len, record) = match self.get_record(id, offset) {
                 Ok(ReadLogRecord { record, size }) => (size, record),
@@ -280,15 +312,21 @@ impl DBEngine {
                 Err(e) => return Err(e),
             };
 
-            let record_position = RecordPosition::new(id, offset);
+            let record_position = RecordPosition::new(id, offset, record_len);
 
             match record.batch_state {
                 RecordBatchState::Enable(state) => match record.record_type {
-                    RecordType::Commited => batched
-                        .remove(&state.get())
-                        .unwrap()
-                        .into_iter()
-                        .try_for_each(|record| self.update_index(record, record_position)),
+                    RecordType::Commited => {
+                        batched
+                            .remove(&state.get())
+                            .unwrap()
+                            .into_iter()
+                            .try_for_each(|record| self.update_index(record, record_position))?;
+                        if current_seq_no < state.get() {
+                            current_seq_no = state.get();
+                        }
+                        Ok(())
+                    }
                     _ => {
                         batched.entry(state.into()).or_default().push(record);
                         Ok(())
@@ -300,6 +338,8 @@ impl DBEngine {
 
             offset += record_len;
         }
+
+        self.batch_seq.store(current_seq_no, Ordering::SeqCst);
 
         Ok(offset)
     }
@@ -329,11 +369,33 @@ impl DBEngine {
         }
     }
 
+    fn get_record_with_position(&self, position: RecordPosition) -> BCResult<ReadLogRecord> {
+        // let active_file = self.active.read();
+        let active_file = self.read_active.read();
+        let old_files = self.archive.read();
+
+        if active_file.id == position.fid {
+            active_file.read_record_with_size(position.offset, position.size)
+        } else {
+            old_files
+                .get(&position.fid)
+                .unwrap()
+                .read_record_with_size(position.offset, position.size)
+        }
+    }
+
     pub(crate) fn get_index(&self, key: &[u8]) -> &dyn Indexer {
-        self.index
-            .get(key_hash(key, self.config.index_num))
-            .unwrap()
-            .as_ref()
+        unsafe {
+            self.index
+                .get_unchecked(key_hash(key, self.config.index_num))
+                .as_ref()
+        }
+    }
+}
+
+impl Drop for DBEngine {
+    fn drop(&mut self) {
+        if self.close().ok().is_some() {}
     }
 }
 
@@ -378,7 +440,7 @@ mod tests {
     #[test]
     fn put() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf());
+        let engine = open(temp_dir.path().to_path_buf())?;
         let word = Word();
         let sentence = Sentence(64..65);
 
@@ -424,15 +486,16 @@ mod tests {
         }
 
         // reboot, then put
-        // TODO: close the old db
-        drop(engine);
-        let engine = open(temp_dir.path().to_path_buf());
+        engine.close()?;
+
+        let engine = open(temp_dir.path().to_path_buf())?;
 
         let key: String = word.fake();
         let value = sentence.fake::<String>();
         let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.get(key.as_bytes());
+        let res = dbg!(res);
         assert!(res.is_ok());
         let res_value = res.unwrap();
         assert_eq!(value.as_bytes(), res_value);
@@ -443,7 +506,7 @@ mod tests {
     #[test]
     fn get() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf());
+        let engine = open(temp_dir.path().to_path_buf())?;
         let word = Word();
         let sentence = Sentence(64..65);
 
@@ -494,8 +557,10 @@ mod tests {
         assert!(res.is_ok());
         assert_eq!(old_value, String::from_utf8(res.unwrap()).unwrap());
 
+        engine.close()?;
+
         // reopen the db, get the old record
-        let engine = open(temp_dir.path().to_path_buf());
+        let engine = open(temp_dir.path().to_path_buf())?;
         let res = engine.get(old_key.as_bytes());
         assert!(res.is_ok());
         assert_eq!(old_value, String::from_utf8(res.unwrap()).unwrap());
@@ -504,9 +569,9 @@ mod tests {
     }
 
     #[test]
-    fn del() {
+    fn del() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf());
+        let engine = open(temp_dir.path().to_path_buf())?;
         let word = Word();
         let sentence = Sentence(64..65);
 
@@ -548,5 +613,77 @@ mod tests {
         let res = engine.get(key.as_bytes());
         assert!(res.is_ok());
         assert_eq!(value.as_bytes(), res.unwrap());
+
+        Ok(())
+    }
+
+    #[test]
+    fn close() -> BCResult<()> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let engine = open(temp_dir.path().to_path_buf())?;
+        let word = Word();
+        let sentence = Sentence(64..65);
+
+        // get one normal record
+        let key: String = word.fake();
+        let value = sentence.fake::<String>();
+        let res = engine.put(key.clone(), value.clone());
+        assert!(res.is_ok());
+        let res = engine.get(key.as_bytes());
+        assert!(res.is_ok());
+        assert_eq!(value.as_bytes(), res.unwrap());
+
+        assert!(engine.close().is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn sync() -> BCResult<()> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let engine = open(temp_dir.path().to_path_buf())?;
+        let word = Word();
+        let sentence = Sentence(64..65);
+
+        // get one normal record
+        let key: String = word.fake();
+        let value = sentence.fake::<String>();
+        let res = engine.put(key.clone(), value.clone());
+        assert!(res.is_ok());
+        let res = engine.get(key.as_bytes());
+        assert!(res.is_ok());
+        assert_eq!(value.as_bytes(), res.unwrap());
+
+        assert!(engine.sync().is_ok());
+        assert!(engine.close().is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn file_lock() -> BCResult<()> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let engine = open(temp_dir.path().to_path_buf())?;
+        let word = Word();
+        let sentence = Sentence(64..65);
+
+        // get one normal record
+        let key: String = word.fake();
+        let value = sentence.fake::<String>();
+        let res = engine.put(key.clone(), value.clone());
+        assert!(res.is_ok());
+        let res = engine.get(key.as_bytes());
+        assert!(res.is_ok());
+        assert_eq!(value.as_bytes(), res.unwrap());
+
+        let engine2 = open(temp_dir.path().to_path_buf());
+        assert!(engine2.is_err());
+
+        engine.close()?;
+
+        let engine2 = open(temp_dir.path().to_path_buf());
+        assert!(engine2.is_ok());
+
+        Ok(())
     }
 }
