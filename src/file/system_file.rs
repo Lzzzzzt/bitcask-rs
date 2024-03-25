@@ -1,5 +1,4 @@
 use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
@@ -26,8 +25,11 @@ impl SystemFile {
 }
 
 impl IO for SystemFile {
-    fn write(&mut self, buf: &[u8]) -> BCResult<u32> {
-        let write_size = self.fd.write(buf).map_err(Errors::WriteDataFileFaild)?;
+    fn write(&mut self, buf: &[u8], offset: u32) -> BCResult<u32> {
+        let write_size = self
+            .fd
+            .write_at(buf, offset as u64)
+            .map_err(Errors::WriteDataFileFaild)?;
         Ok(write_size as u32)
     }
 
@@ -63,7 +65,7 @@ mod tests {
         let path = tempfile::tempfile().unwrap();
         let mut system_file: SystemFile = path.into();
 
-        let write_size = system_file.write("Hello".as_bytes())?;
+        let write_size = system_file.write("Hello".as_bytes(), 0)?;
         assert_eq!(write_size, 5);
 
         Ok(())
@@ -93,7 +95,7 @@ mod tests {
         let path = tempfile::tempfile().unwrap();
         let mut system_file: SystemFile = path.into();
 
-        let write_size = system_file.write("Hello".as_bytes())?;
+        let write_size = system_file.write("Hello".as_bytes(), 0)?;
         assert_eq!(write_size, 5);
 
         system_file.sync()?;

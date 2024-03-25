@@ -21,6 +21,7 @@ pub struct DBEngine {
     fids: Vec<u32>,
     pub(crate) config: Config,
     pub(crate) active: RwLock<DataFile>,
+    pub(crate) read_active: RwLock<DataFile>,
     pub(crate) index: Vec<Box<dyn Indexer>>,
     pub(crate) archive: RwLock<HashMap<u32, DataFile>>,
     pub(crate) batch_lock: Mutex<()>,
@@ -68,9 +69,12 @@ impl DBEngine {
 
         let active_file_id = active_file.id;
 
+        let read_active_file = DataFile::new(&config.db_path, active_file_id)?;
+
         let mut engine = Self {
             index: create_indexer(&config.index_type, config.index_num),
             active: RwLock::new(active_file),
+            read_active: RwLock::new(read_active_file),
             archive: RwLock::new(file_with_id),
             fids: data_fids,
             config,
@@ -137,12 +141,8 @@ impl DBEngine {
         // fecth log record positon with key
         let record_position = self.get_index(key).get(key).ok_or(Errors::KeyNotFound)?;
 
-        // let target_file_id = record_position.fid;
-
         // get record
         let ReadLogRecord { record, .. } = self.get_record_with_position(record_position)?;
-        // let ReadLogRecord { record, .. } =
-        //     self.get_record(target_file_id, record_position.offset)?;
 
         // if this record is deleted, return `KeyNotFound`
         if matches!(record.record_type, RecordType::Deleted) {
@@ -160,17 +160,17 @@ impl DBEngine {
 
         check_key_valid(key)?;
 
-        let real_index = self.get_index(key);
-        match real_index.get(key) {
-            Some(_) => (),
-            None => return Ok(()),
-        };
+        let index = self.get_index(key);
+
+        if !index.exist(key) {
+            return Ok(());
+        }
 
         let record = LogRecord::deleted(key.to_vec());
 
         self.append_log_record(&record)?;
 
-        real_index
+        index
             .del(key)
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
 
@@ -184,49 +184,45 @@ impl DBEngine {
     pub(crate) fn append_log_record(&self, record: &LogRecord) -> BCResult<RecordPosition> {
         let db_path = &self.config.db_path;
 
-        let encoded_record_len = record.calculate_encoded_length() as u32;
+        let record_len = record.calculate_encoded_length() as u32;
 
         // fetch active file
-        let mut active_file = self.active.write();
+        let mut active = self.active.write();
 
         // check current active file size is small then config.data_file_size
-        if active_file.write_offset + encoded_record_len > self.config.file_size_threshold {
+        if active.write_offset + record_len > self.config.file_size_threshold {
             // sync active file
-            active_file.sync()?;
+            active.sync()?;
 
-            let current_file_id = active_file.id;
+            let pre_fid = active.id;
             // create new active file and store active file into old file
-            let current_active_file = std::mem::replace(
-                &mut *active_file,
-                DataFile::new(db_path, current_file_id + 1)?,
-            );
+            let pre_active = std::mem::replace(&mut *active, DataFile::new(db_path, pre_fid + 1)?);
 
-            self.archive
-                .write()
-                .insert(current_file_id, current_active_file);
+            // update the active file for read
+            *self.read_active.write() = DataFile::new(db_path, pre_fid + 1)?;
+
+            self.archive.write().insert(pre_fid, pre_active);
         }
 
         // append record into active file
-        let write_offset = active_file.write_offset;
-        active_file.write_record(record)?;
-
-        let write_size = active_file.write_offset - write_offset;
+        let write_offset = active.write_offset;
+        active.write_record(record)?;
 
         self.bytes_written
-            .fetch_add(write_size as usize, Ordering::SeqCst);
+            .fetch_add(record_len as usize, Ordering::SeqCst);
 
         if self.config.sync_write
             && self.config.bytes_per_sync > 0
             && self.bytes_written.load(Ordering::SeqCst) / self.config.bytes_per_sync >= 1
         {
-            active_file.sync()?;
+            active.sync()?;
         }
 
         // construct in-memory index infomation
         Ok(RecordPosition {
-            fid: active_file.id,
+            fid: active.id,
             offset: write_offset,
-            size: write_size,
+            size: record_len,
         })
     }
 
@@ -374,7 +370,8 @@ impl DBEngine {
     }
 
     fn get_record_with_position(&self, position: RecordPosition) -> BCResult<ReadLogRecord> {
-        let active_file = self.active.read();
+        // let active_file = self.active.read();
+        let active_file = self.read_active.read();
         let old_files = self.archive.read();
 
         if active_file.id == position.fid {

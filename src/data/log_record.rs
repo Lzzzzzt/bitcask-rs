@@ -170,8 +170,8 @@ impl LogRecord {
         bytes.put_u32(self.value.len() as u32);
 
         // store the key/value set
-        bytes.extend_from_slice(&self.value);
-        bytes.extend_from_slice(&self.key);
+        bytes.extend(&self.value);
+        bytes.extend(&self.key);
 
         // calculate crc then store it
         let crc = calculate_crc_checksum(&bytes);
@@ -211,7 +211,7 @@ pub struct ReadLogRecord {
 }
 
 impl ReadLogRecord {
-    pub fn decode<T: IO>(io: &T, offset: u32) -> BCResult<Self> {
+    pub fn decode(io: &dyn IO, offset: u32) -> BCResult<Self> {
         // read record metadata(type, key size, value size)
         let mut record_metadata = BytesMut::zeroed(LogRecord::max_record_metadata_size());
         io.read(&mut record_metadata, offset)?;
