@@ -15,11 +15,13 @@ pub struct RecordPosition {
     pub(crate) fid: u32,
     /// offset, means the position that the data store in data file
     pub(crate) offset: u32,
+
+    pub(crate) size: u32,
 }
 
 impl RecordPosition {
-    pub(crate) fn new(fid: u32, offset: u32) -> Self {
-        Self { fid, offset }
+    pub(crate) fn new(fid: u32, offset: u32, size: u32) -> Self {
+        Self { fid, offset, size }
     }
 
     pub(crate) fn encode(&self) -> Vec<u8> {
@@ -27,16 +29,21 @@ impl RecordPosition {
 
         res.extend_from_slice(&self.fid.to_be_bytes());
         res.extend_from_slice(&self.offset.to_be_bytes());
+        res.extend_from_slice(&self.size.to_be_bytes());
 
         res
     }
 
-    pub(crate) fn decode(mut data: Vec<u8>) -> Self {
-        let offset = data.split_off(4);
-        let fid = data;
+    pub(crate) fn decode(data: &[u8]) -> Self {
+        let data: Vec<_> = data
+            .chunks(4)
+            .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+
         Self {
-            fid: u32::from_be_bytes([fid[0], fid[1], fid[2], fid[3]]),
-            offset: u32::from_be_bytes([offset[0], offset[1], offset[2], offset[3]]),
+            fid: data[0],
+            offset: data[1],
+            size: data[2],
         }
     }
 }
@@ -95,7 +102,6 @@ impl From<u64> for RecordBatchState {
 #[derive(Debug)]
 pub struct LogRecord {
     pub(crate) record_type: RecordType,
-    /// 0 is disable transaction
     pub(crate) batch_state: RecordBatchState,
     pub(crate) key: Key,
     pub(crate) value: Value,
@@ -205,7 +211,7 @@ pub struct ReadLogRecord {
 }
 
 impl ReadLogRecord {
-    pub fn decode(io: &dyn IO, offset: u32) -> BCResult<Self> {
+    pub fn decode<T: IO>(io: &T, offset: u32) -> BCResult<Self> {
         // read record metadata(type, key size, value size)
         let mut record_metadata = BytesMut::zeroed(LogRecord::max_record_metadata_size());
         io.read(&mut record_metadata, offset)?;
@@ -258,6 +264,44 @@ impl ReadLogRecord {
             record,
             size: (actual_metadata_size + key_size + value_size + 4) as u32,
         })
+    }
+
+    pub fn decode_vec(data: Vec<u8>) -> BCResult<Self> {
+        let size = data.len() as u32;
+
+        let record_crc = calculate_crc_checksum(&data[..size as usize - 4]);
+
+        let mut reader = BytesMut::from_iter(data);
+
+        let record_type = reader.get_u8().try_into()?;
+
+        // decode transaction state
+        let transaction_state = reader.get_u64();
+
+        // decode key/value size
+        let key_size = reader.get_u32() as usize;
+        let value_size = reader.get_u32() as usize;
+
+        if key_size == 0 && value_size == 0 {
+            return Err(Errors::DataFileEndOfFile);
+        }
+
+        let value = reader.copy_to_bytes(value_size).to_vec();
+        let key = reader.copy_to_bytes(key_size).to_vec();
+        let crc = reader.get_u32();
+
+        let record = LogRecord {
+            key,
+            value,
+            record_type,
+            batch_state: transaction_state.into(),
+        };
+
+        if record_crc != crc {
+            return Err(Errors::InvalidRecordCRC);
+        }
+
+        Ok(Self { record, size })
     }
 }
 

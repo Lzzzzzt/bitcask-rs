@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::DB_DATA_FILE_SUFFIX;
+use crate::{DB_DATA_FILE_SUFFIX, DB_FILE_LOCK};
 
 #[derive(Debug, Error)]
 pub enum Errors {
@@ -17,6 +17,12 @@ pub enum Errors {
     SyncDataFileFaild(std::io::Error),
     #[error("Failed to open the data file: {0}")]
     OpenDataFileFailed(std::io::Error),
+    #[error("Failed to map the data file: {0}")]
+    MemoryMapFileFailed(std::io::Error),
+    #[error("Failed to open the lock file: {DB_FILE_LOCK}")]
+    OpenLockFileFailed,
+    #[error("Failed to set the file lengthe: {0}")]
+    SetFileLenFailed(u32),
     #[error("Unknown log record type")]
     UnknownRecordType,
 
@@ -37,6 +43,8 @@ pub enum Errors {
     DataFileEndOfFile,
     #[error("Invalid log record crc, data may be damaged")]
     InvalidRecordCRC,
+    #[error("This directory is using")]
+    DBIsInUsing,
 
     // Config
     #[error("DB directory path is empty")]

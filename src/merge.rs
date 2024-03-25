@@ -190,10 +190,13 @@ impl MergeEngine {
         let write_offset = active_file.write_offset;
         active_file.write_record(record)?;
 
+        let write_size = active_file.write_offset - write_offset;
+
         // construct in-memory index infomation
         Ok(RecordPosition {
             fid: active_file.id,
             offset: write_offset,
+            size: write_size,
         })
     }
 
@@ -218,7 +221,7 @@ mod tests {
     #[test]
     fn merge() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf());
+        let engine = open(temp_dir.path().to_path_buf())?;
         let word = Word();
         let sentence = Sentence(64..65);
 
@@ -244,7 +247,7 @@ mod tests {
     #[test]
     fn merge_multithread() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf());
+        let engine = open(temp_dir.path().to_path_buf())?;
         let word = Word();
         let sentence = Sentence(64..65);
 
