@@ -11,7 +11,7 @@ pub trait IO: Sync + Send {
     /// ## Return Value
     /// + `Ok(usize)` means `usize` bytes data have been succussfully write into the io
     /// + `Err` means this function call failed
-    fn write(&mut self, buf: &[u8]) -> BCResult<u32>;
+    fn write(&mut self, buf: &[u8], offset: u32) -> BCResult<u32>;
 
     /// read from the `io` at the given `offset` with the `buf` length
     /// ## Return Value
@@ -29,4 +29,5 @@ pub trait IO: Sync + Send {
 
 pub fn create_io_manager(filename: impl AsRef<Path>) -> BCResult<SystemFile> {
     SystemFile::new(filename)
+    // IoUring::new(filename)
 }

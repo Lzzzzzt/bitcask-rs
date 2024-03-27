@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::BCResult;
 use crate::file::io::{create_io_manager, IO};
+
 use crate::file::system_file::SystemFile;
+// use crate::file::system_file::SystemFile;
 use crate::{DB_DATA_FILE_SUFFIX, DB_HINT_FILE, DB_MERGE_FIN_FILE};
 
 use super::log_record::{LogRecord, ReadLogRecord};
@@ -47,7 +49,7 @@ impl DataFile {
 
     pub fn write_record(&mut self, record: &LogRecord) -> BCResult<u32> {
         let encoded = record.encode();
-        let write_size = self.io.write(&encoded)?;
+        let write_size = self.io.write(&encoded, self.write_offset)?;
         self.write_offset += write_size;
         Ok(write_size)
     }
