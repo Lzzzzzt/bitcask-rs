@@ -1,11 +1,23 @@
-use std::num::NonZeroU64;
+use std::mem::size_of;
+use std::num::{NonZeroU128, NonZeroU64};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bytes::{Buf, BufMut, BytesMut};
+use bitflags::bitflags;
+use bytes::BufMut;
 use crc32fast::Hasher;
 
 use crate::errors::{BCResult, Errors};
 use crate::file::io::IO;
 use crate::utils::{Key, Value};
+
+macro_rules! get {
+    ($typ: ty, $data: expr, $index: expr) => {{
+        const STEP: usize = std::mem::size_of::<$typ>();
+        let _tmp = <$typ>::from_be_bytes(unsafe { *$data[$index..].as_ptr().cast::<[u8; STEP]>() });
+        $index += STEP;
+        _tmp
+    }};
+}
 
 /// ## Data Position Index
 /// `LogRecordPosition` will describe data store in which position.
@@ -25,7 +37,7 @@ impl RecordPosition {
     }
 
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut res = Vec::with_capacity(8);
+        let mut res = Vec::with_capacity(size_of::<Self>());
 
         res.extend_from_slice(&self.fid.to_be_bytes());
         res.extend_from_slice(&self.offset.to_be_bytes());
@@ -35,30 +47,38 @@ impl RecordPosition {
     }
 
     pub(crate) fn decode(data: &[u8]) -> Self {
-        let data: Vec<_> = data
-            .chunks(4)
-            .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
+        let mut index = 0;
 
         Self {
-            fid: data[0],
-            offset: data[1],
-            size: data[2],
+            fid: get!(u32, data, index),
+            offset: get!(u32, data, index),
+            #[allow(unused_assignments)]
+            size: get!(u32, data, index),
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum RecordType {
-    // the record that be marked deleted
-    Deleted = 0,
-    // the nomarl data
-    Normal = 1,
-    // mark commited transacton
-    Commited = 2,
+bitflags! {
+    struct RecordHeaderBits: u8 {
+        const DELETED  = 1 << 0;
+        const NORMAL   = 1 << 1;
+        const COMMITED = 1 << 2;
+        const BATCH    = 1 << 3;
+        const EXPIRE   = 1 << 4;
+    }
 }
 
-impl TryFrom<u8> for RecordType {
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RecordDataType {
+    // the record that be marked deleted
+    Deleted,
+    // the nomarl data
+    Normal,
+    // mark commited transacton
+    Commited,
+}
+
+impl TryFrom<u8> for RecordDataType {
     type Error = Errors;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
@@ -66,7 +86,7 @@ impl TryFrom<u8> for RecordType {
             0 => Ok(Self::Deleted),
             1 => Ok(Self::Normal),
             2 => Ok(Self::Commited),
-            _ => Err(Errors::UnknownRecordType),
+            _ => Err(Errors::UnknownRecordDataType),
         }
     }
 }
@@ -96,24 +116,51 @@ impl From<u64> for RecordBatchState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RecordExpireState {
+    Enable(NonZeroU128),
+    Disable,
+}
+
+impl From<RecordExpireState> for u128 {
+    fn from(value: RecordExpireState) -> Self {
+        match value {
+            RecordExpireState::Enable(u) => u.into(),
+            RecordExpireState::Disable => 0,
+        }
+    }
+}
+
+impl From<u128> for RecordExpireState {
+    fn from(value: u128) -> Self {
+        if value == 0 {
+            Self::Disable
+        } else {
+            Self::Enable(unsafe { NonZeroU128::new_unchecked(value) })
+        }
+    }
+}
+
 /// the record that will write into the data file
 ///
 /// the reason why being called 'record' is the data in data file is appended, like log record
 #[derive(Debug)]
-pub struct LogRecord {
-    pub(crate) record_type: RecordType,
+pub struct Record {
+    pub(crate) record_type: RecordDataType,
     pub(crate) batch_state: RecordBatchState,
+    pub(crate) expire: RecordExpireState,
     pub(crate) key: Key,
     pub(crate) value: Value,
 }
 
-impl LogRecord {
+impl Record {
     pub fn normal(key: Key, value: Value) -> Self {
         Self {
             key,
             value,
-            record_type: RecordType::Normal,
+            record_type: RecordDataType::Normal,
             batch_state: RecordBatchState::Disable,
+            expire: RecordExpireState::Disable,
         }
     }
 
@@ -121,8 +168,9 @@ impl LogRecord {
         Self {
             key,
             value: Default::default(),
-            record_type: RecordType::Deleted,
+            record_type: RecordDataType::Deleted,
             batch_state: RecordBatchState::Disable,
+            expire: RecordExpireState::Disable,
         }
     }
 
@@ -130,8 +178,9 @@ impl LogRecord {
         Self {
             key: "BF".into(),
             value: Default::default(),
-            record_type: RecordType::Commited,
+            record_type: RecordDataType::Commited,
             batch_state: seq.into(),
+            expire: RecordExpireState::Disable,
         }
     }
 
@@ -148,22 +197,44 @@ impl LogRecord {
         self.batch_state = RecordBatchState::Disable
     }
 
+    pub fn expire(mut self, time: Duration) -> BCResult<Self> {
+        let expire_time = SystemTime::now()
+            .checked_add(time)
+            .ok_or(Errors::InvalidExpireTime)?;
+        let ts = expire_time.duration_since(UNIX_EPOCH).unwrap().as_micros();
+
+        self.expire = ts.into();
+        Ok(self)
+    }
+
     pub fn encode(&self) -> Vec<u8> {
-        self.encode_and_crc().0
-    }
+        let size = self.calculate_encoded_length();
+        let mut bytes = Vec::with_capacity(size);
 
-    pub fn crc(&self) -> u32 {
-        self.encode_and_crc().1
-    }
+        // total record size
+        bytes.put_u64(size as u64);
 
-    fn encode_and_crc(&self) -> (Vec<u8>, u32) {
-        let mut bytes = Vec::with_capacity(self.calculate_encoded_length());
+        let mut meta = RecordHeaderBits::empty();
+        // save for meta
+        bytes.put_u8(0);
 
-        // First bytes store `LogRecordType`
-        bytes.put_u8(self.record_type as u8);
+        match self.record_type {
+            RecordDataType::Deleted => meta |= RecordHeaderBits::DELETED,
+            RecordDataType::Normal => meta |= RecordHeaderBits::NORMAL,
+            RecordDataType::Commited => meta |= RecordHeaderBits::COMMITED,
+        }
 
-        // store the transaction state
-        bytes.put_u64(self.batch_state.into());
+        if RecordBatchState::Disable != self.batch_state {
+            meta |= RecordHeaderBits::BATCH;
+            bytes.put_u64(self.batch_state.into())
+        }
+
+        if RecordExpireState::Disable != self.expire {
+            meta |= RecordHeaderBits::EXPIRE;
+            bytes.put_u128(self.expire.into());
+        }
+
+        unsafe { *bytes.get_unchecked_mut(8) = meta.bits() }
 
         // then store the key size and value size
         bytes.put_u32(self.key.len() as u32);
@@ -177,131 +248,149 @@ impl LogRecord {
         let crc = calculate_crc_checksum(&bytes);
         bytes.put_u32(crc);
 
-        (bytes, crc)
+        bytes
+    }
+
+    pub fn crc(&self) -> u32 {
+        let encoded = self.encode();
+        let crc_bytes = encoded.last_chunk::<4>().unwrap();
+        u32::from_be_bytes(*crc_bytes)
     }
 
     pub fn calculate_encoded_length(&self) -> usize {
-        use std::mem::size_of;
         let key_len = self.key.len();
         let value_len = self.value.len();
 
-        size_of::<RecordType>()
-            + size_of::<u32>() * 3 // crc, key size, value size
+        let mut fixed_length = size_of::<RecordHeaderBits>()
+            + size_of::<u32>() * 3
             + key_len
             + value_len
-            + size_of::<RecordBatchState>()
-    }
+            + size_of::<u64>();
 
-    const fn max_record_metadata_size() -> usize {
-        std::mem::size_of::<RecordType>()
-            + std::mem::size_of::<u32>() * 2
-            + std::mem::size_of::<usize>()
+        if matches!(self.batch_state, RecordBatchState::Enable(_)) {
+            fixed_length += size_of::<RecordBatchState>()
+        }
+
+        if matches!(self.expire, RecordExpireState::Enable(_)) {
+            fixed_length += size_of::<RecordExpireState>()
+        }
+
+        fixed_length
     }
 }
 
+#[inline]
 fn calculate_crc_checksum(bytes: &[u8]) -> u32 {
     let mut hasher = Hasher::new();
     hasher.update(bytes);
     hasher.finalize()
 }
 
-pub struct ReadLogRecord {
-    pub record: LogRecord,
-    pub size: u32,
+pub struct ReadRecord {
+    data: Box<[u8]>,
+    key_value_start: u32,
+    key_size: u32,
+    value_size: u32,
+    pub(crate) record_type: RecordDataType,
+    pub(crate) batch_state: RecordBatchState,
+    pub(crate) expire: RecordExpireState,
 }
 
-impl ReadLogRecord {
+#[allow(unused)]
+impl ReadRecord {
     pub fn decode<T: IO>(io: &T, offset: u32) -> BCResult<Self> {
-        // read record metadata(type, key size, value size)
-        let mut record_metadata = BytesMut::zeroed(LogRecord::max_record_metadata_size());
-        io.read(&mut record_metadata, offset)?;
+        let mut size_bytes: [u8; 8] = [0; 8];
+        io.read(&mut size_bytes, offset)?;
+        let size = u64::from_be_bytes(size_bytes);
 
-        // decode record type
-        let record_type = record_metadata.get_u8().try_into()?;
-
-        // decode transaction state
-        let transaction_state = record_metadata.get_u64();
-
-        // decode key/value size
-        let key_size = record_metadata.get_u32() as usize;
-        let value_size = record_metadata.get_u32() as usize;
-
-        if key_size == 0 && value_size == 0 {
+        if size == 0 {
             return Err(Errors::DataFileEndOfFile);
         }
 
-        // read key/value set and crc
-        let mut value_key = vec![0; key_size + value_size + 4];
+        let mut data = vec![0u8; size as usize];
 
-        // calc actual metadata size
-        let actual_metadata_size = LogRecord::max_record_metadata_size();
+        io.read(&mut data, offset)?;
 
-        io.read(&mut value_key, offset + actual_metadata_size as u32)?;
-
-        // get the crc
-        let crc = &value_key[key_size + value_size..];
-        let crc = u32::from_be_bytes([crc[0], crc[1], crc[2], crc[3]]);
-        value_key.truncate(key_size + value_size);
-
-        // create new key/value just copy the key vec
-        let key = value_key.split_off(value_size);
-        let value = value_key;
-
-        // construct record
-        let record = LogRecord {
-            key,
-            value,
-            record_type,
-            batch_state: transaction_state.into(),
-        };
-
-        // calc crc and compare
-        if record.crc() != crc {
-            return Err(Errors::InvalidRecordCRC);
-        }
-
-        Ok(Self {
-            record,
-            size: (actual_metadata_size + key_size + value_size + 4) as u32,
-        })
+        Self::decode_vec(data)
     }
 
     pub fn decode_vec(data: Vec<u8>) -> BCResult<Self> {
-        let size = data.len() as u32;
+        let data = data.into_boxed_slice();
 
-        let record_crc = calculate_crc_checksum(&data[..size as usize - 4]);
-
-        let mut reader = BytesMut::from_iter(data);
-
-        let record_type = reader.get_u8().try_into()?;
-
-        // decode transaction state
-        let transaction_state = reader.get_u64();
-
-        // decode key/value size
-        let key_size = reader.get_u32() as usize;
-        let value_size = reader.get_u32() as usize;
-
-        if key_size == 0 && value_size == 0 {
-            return Err(Errors::DataFileEndOfFile);
-        }
-
-        let value = reader.copy_to_bytes(value_size).to_vec();
-        let key = reader.copy_to_bytes(key_size).to_vec();
-        let crc = reader.get_u32();
-
-        let record = LogRecord {
-            key,
-            value,
-            record_type,
-            batch_state: transaction_state.into(),
-        };
+        let record_crc = calculate_crc_checksum(&data[..data.len() - 4]);
+        let crc = u32::from_be_bytes(*data.last_chunk::<4>().unwrap());
 
         if record_crc != crc {
             return Err(Errors::InvalidRecordCRC);
         }
 
-        Ok(Self { record, size })
+        let mut index = size_of::<u64>();
+
+        let meta = RecordHeaderBits::from_bits_truncate(get!(u8, data, index));
+
+        let record_type = if meta.contains(RecordHeaderBits::DELETED) {
+            RecordDataType::Deleted
+        } else if meta.contains(RecordHeaderBits::COMMITED) {
+            RecordDataType::Commited
+        } else {
+            RecordDataType::Normal
+        };
+
+        let batch_state = if meta.contains(RecordHeaderBits::BATCH) {
+            get!(u64, data, index).into()
+        } else {
+            0.into()
+        };
+
+        let expire = if meta.contains(RecordHeaderBits::EXPIRE) {
+            get!(u128, data, index).into()
+        } else {
+            0.into()
+        };
+
+        // decode key/value size
+        let key_size = get!(u32, data, index);
+        let value_size = get!(u32, data, index);
+
+        Ok(Self {
+            data,
+            key_value_start: index as u32,
+            key_size,
+            value_size,
+            record_type,
+            batch_state,
+            expire,
+        })
+    }
+
+    pub fn value(&self) -> &[u8] {
+        let start = self.key_value_start as usize;
+        let end = start + self.value_size as usize;
+        &self.data[start..end]
+    }
+
+    pub fn key(&self) -> &[u8] {
+        let start = (self.key_value_start + self.value_size) as usize;
+        let end = start + self.key_size as usize;
+        &self.data[start..end]
+    }
+
+    pub fn size(&self) -> u32 {
+        self.data.len() as u32
+    }
+
+    pub fn into_log_record(self) -> Record {
+        let value_start = self.key_value_start as usize;
+        let value_end = value_start + self.value_size as usize;
+        let key_start = value_end;
+        let key_end = key_start + self.key_size as usize;
+        Record {
+            record_type: self.record_type,
+            batch_state: self.batch_state,
+            expire: self.expire,
+            key: self.data[key_start..key_end].to_vec(),
+            value: self.data[value_start..value_end].to_vec(),
+        }
     }
 }
 
@@ -312,7 +401,7 @@ mod tests {
     #[test]
     fn record_encode() {
         // normal record
-        let nomarl_record = LogRecord::normal("foo".into(), "bar".into());
+        let nomarl_record = Record::normal("foo".into(), "bar".into());
 
         let encoded_normal_record = nomarl_record.encode();
 
@@ -320,7 +409,7 @@ mod tests {
         // assert_eq!(3762633406, nomarl_record.crc());
 
         // value is empty
-        let value_is_empty = LogRecord::normal("foo".into(), "".into());
+        let value_is_empty = Record::normal("foo".into(), "".into());
 
         let encoded_normal_record = value_is_empty.encode();
 
@@ -328,7 +417,7 @@ mod tests {
         // assert_eq!(260641321, value_is_empty.crc());
 
         // type is deleted
-        let type_is_deleted = LogRecord::deleted("foo".into());
+        let type_is_deleted = Record::deleted("foo".into());
 
         let encoded_normal_record = type_is_deleted.encode();
 

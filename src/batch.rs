@@ -4,14 +4,14 @@ use std::sync::atomic::Ordering;
 use parking_lot::RwLock;
 
 use crate::config::WriteBatchConfig;
-use crate::data::log_record::LogRecord;
+use crate::data::log_record::{Record, RecordDataType};
 use crate::db::DBEngine;
 use crate::errors::{BCResult, Errors};
 use crate::utils::{check_key_valid, Key, Value};
 
 /// ensure atomic write
 pub struct WriteBatch<'a> {
-    pub pending: RwLock<HashMap<Key, LogRecord>>,
+    pub pending: RwLock<HashMap<Key, Record>>,
     pub engine: &'a DBEngine,
     pub config: WriteBatchConfig,
 }
@@ -36,7 +36,7 @@ impl<'a> WriteBatch<'a> {
         // when commit, should restore the key to the record
         self.pending
             .write()
-            .insert(key, LogRecord::normal(Default::default(), value));
+            .insert(key, Record::normal(Default::default(), value));
 
         Ok(())
     }
@@ -56,7 +56,7 @@ impl<'a> WriteBatch<'a> {
         }
 
         // staging data in memory
-        pending.insert(key.into(), LogRecord::deleted(Default::default()));
+        pending.insert(key.into(), Record::deleted(Default::default()));
 
         Ok(())
     }
@@ -93,7 +93,7 @@ impl<'a> WriteBatch<'a> {
 
         // append batch finished record
         self.engine
-            .append_log_record(&LogRecord::batch_finished(seq))?;
+            .append_log_record(&Record::batch_finished(seq))?;
 
         if self.config.sync_write {
             self.engine.sync()?;
@@ -102,7 +102,15 @@ impl<'a> WriteBatch<'a> {
         // update memory index
         record_and_position
             .into_iter()
-            .try_for_each(|(record, pos)| self.engine.update_index(record, pos))?;
+            .try_for_each(|(record, pos)| {
+                let real_index = self.engine.get_index(&record.key);
+
+                match record.record_type {
+                    RecordDataType::Deleted => real_index.del(&record.key),
+                    RecordDataType::Normal => real_index.put(record.key, pos),
+                    RecordDataType::Commited => unreachable!(),
+                }
+            })?;
 
         Ok(())
     }

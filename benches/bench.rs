@@ -37,9 +37,9 @@ fn bench(c: &mut Criterion) {
 
     c.bench_function("get", |b| {
         b.iter_batched(
-            || insert_keys[random::<usize>() % 100000].clone(),
+            || &insert_keys[random::<usize>() % 100000],
             |k| {
-                assert!(engine.get(k.as_bytes()).is_ok());
+                assert!(engine.get(k).is_ok());
             },
             criterion::BatchSize::SmallInput,
         );
@@ -126,9 +126,9 @@ fn bench_multithread(c: &mut Criterion) {
 
             insert_keys
                 .par_iter()
-                .for_each(|k| black_box(assert!(engine.get(k.as_bytes()).is_ok())));
+                .for_each(|k| assert!(black_box(engine.get(k.as_bytes()).is_ok())));
 
-            start.elapsed().div(100000)
+            start.elapsed()
         })
     });
 
@@ -137,12 +137,12 @@ fn bench_multithread(c: &mut Criterion) {
             let start = Instant::now();
 
             insert_keys.par_iter().take(2000).for_each(|k| {
-                black_box(assert!(engine
-                    .put(k.clone(), value.fake::<String>())
-                    .is_ok()))
+                assert!(black_box(
+                    engine.put(k.clone(), value.fake::<String>()).is_ok()
+                ))
             });
 
-            start.elapsed().div(10000)
+            start.elapsed().div(2000)
         })
     });
 

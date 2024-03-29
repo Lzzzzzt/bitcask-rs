@@ -24,7 +24,7 @@ pub enum Errors {
     #[error("Failed to set the file lengthe: {0}")]
     SetFileLenFailed(u32),
     #[error("Unknown log record type")]
-    UnknownRecordType,
+    UnknownRecordDataType,
 
     // DBEngine
     #[error("Key Empty Error")]
@@ -34,11 +34,11 @@ pub enum Errors {
     #[error("Fild not found: filename: {0:09}{DB_DATA_FILE_SUFFIX}")]
     FileNotFound(u32),
     #[error("Create DB directory failed: path is: {0}, due to: {1}")]
-    CreateDBDirFailed(String, std::io::Error),
+    CreateDBDirFailed(Box<str>, std::io::Error),
     #[error("Open DB directory failed: path is: {0}, due to: {1}")]
-    OpenDBDirFailed(String, std::io::Error),
+    OpenDBDirFailed(Box<str>, std::io::Error),
     #[error("DB data file may be damaged: filename: {0}")]
-    DataFileMayBeDamaged(String),
+    DataFileMayBeDamaged(Box<str>),
     #[error("Read data file end of file")]
     DataFileEndOfFile,
     #[error("Invalid log record crc, data may be damaged")]
@@ -60,7 +60,11 @@ pub enum Errors {
     #[error("DB Engine is merging")]
     DBIsMerging,
     #[error("Create DB directory failed: path is: {0}, due to: {1}")]
-    CreateMergeDirFailed(String, std::io::Error),
+    CreateMergeDirFailed(Box<str>, std::io::Error),
+
+    // Expire
+    #[error("Invalid Expire Time")]
+    InvalidExpireTime,
 }
 
 pub type BCResult<T> = std::result::Result<T, Errors>;
