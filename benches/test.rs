@@ -23,7 +23,7 @@ fn main() {
 
     let mut handlers = vec![];
 
-    for i in 0..16 {
+    for _ in 0..32 {
         let eng = Arc::clone(&engine);
 
         handlers.push(thread::spawn(move || {
@@ -31,7 +31,7 @@ fn main() {
             let value = Sentence((3 << 10)..(5 << 10));
             let mut costs = vec![];
 
-            for _ in i..(i + 1) * 2000 {
+            for _ in 0..2000 {
                 let k = key.fake::<String>();
                 let v = value.fake::<String>();
                 let start = Instant::now();
