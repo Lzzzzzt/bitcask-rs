@@ -12,7 +12,7 @@ use super::log_record::{ReadRecord, Record};
 pub struct DataFile {
     pub(crate) id: u32,
     pub(crate) write_offset: u32,
-    io: Box<dyn IO>,
+    io: SystemFile,
 }
 
 impl DataFile {
