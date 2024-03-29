@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use parking_lot::RwLock;
 
 use crate::data::data_file::{data_file_name, DataFile};
-use crate::data::log_record::{LogRecord, ReadLogRecord, RecordPosition};
+use crate::data::log_record::{Record, RecordPosition};
 use crate::db::DBEngine;
 use crate::errors::{BCResult, Errors};
 use crate::utils::merge_path;
@@ -26,30 +26,33 @@ impl DBEngine {
         }
 
         std::fs::create_dir_all(&merge_directory).map_err(|e| {
-            Errors::CreateMergeDirFailed(merge_directory.to_string_lossy().to_string(), e)
+            Errors::CreateMergeDirFailed(
+                merge_directory
+                    .to_string_lossy()
+                    .to_string()
+                    .into_boxed_str(),
+                e,
+            )
         })?;
 
         let merge_files = self.get_merge_files(&merge_directory)?;
         let merge_engine = MergeEngine::new(&merge_directory, self.config.file_size_threshold)?;
-        let mut hint_file = DataFile::hint_file(&merge_directory)?;
+        let mut hint = DataFile::hint_file(&merge_directory)?;
 
         for file in merge_files.iter() {
             let mut offset = 0;
             loop {
-                let ReadLogRecord { mut record, size } = match file.read_record(offset) {
-                    Ok(record) => record,
+                let (size, mut record) = match file.read_record(offset) {
+                    Ok(record) => (record.size(), record.into_log_record()),
                     Err(Errors::DataFileEndOfFile) => break,
                     Err(e) => return Err(e),
                 };
 
-                let real_index = self.get_index(&record.key);
-
-                if let Some(pos) = real_index.get(&record.key) {
+                if let Some(pos) = self.get_index(&record.key).get(&record.key) {
                     if pos.fid == file.id && pos.offset == offset {
                         record.disable_transaction();
                         let position = merge_engine.append_log_record(&record)?;
-                        hint_file
-                            .write_record(&LogRecord::normal(record.key, position.encode()))?;
+                        hint.write_record(&Record::normal(record.key, position.encode()))?;
                     }
                 }
 
@@ -57,12 +60,12 @@ impl DBEngine {
             }
         }
 
-        hint_file.sync()?;
+        hint.sync()?;
         merge_engine.sync()?;
 
         let mut merge_finish_file = DataFile::merge_finish_file(&merge_directory)?;
         let unmerged_fid = merge_files.last().unwrap().id + 1;
-        let merge_finish_record = LogRecord::merge_finished(unmerged_fid);
+        let merge_finish_record = Record::merge_finished(unmerged_fid);
         merge_finish_file.write_record(&merge_finish_record)?;
 
         merge_finish_file.sync()?;
@@ -100,8 +103,9 @@ impl DBEngine {
             return Ok(());
         }
 
-        let directory = std::fs::read_dir(&path)
-            .map_err(|e| Errors::OpenDBDirFailed(path.to_string_lossy().to_string(), e))?;
+        let directory = std::fs::read_dir(&path).map_err(|e| {
+            Errors::OpenDBDirFailed(path.to_string_lossy().to_string().into_boxed_str(), e)
+        })?;
 
         let merged_filenames: Vec<String> = directory
             .filter_map(|f| f.ok())
@@ -121,9 +125,9 @@ impl DBEngine {
         }
 
         let merge_finish_file = DataFile::merge_finish_file(&path)?;
-        let ReadLogRecord { record, .. } = merge_finish_file.read_record(0)?;
-        let bytes = record.value;
-        let unmerged_id = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let record = merge_finish_file.read_record(0)?;
+        let bytes = record.value().first_chunk().unwrap();
+        let unmerged_id = u32::from_be_bytes(*bytes);
 
         // remove merged file
         for fid in 0..unmerged_id {
@@ -162,7 +166,7 @@ impl MergeEngine {
         })
     }
 
-    pub(crate) fn append_log_record(&self, record: &LogRecord) -> BCResult<RecordPosition> {
+    pub(crate) fn append_log_record(&self, record: &Record) -> BCResult<RecordPosition> {
         let db_path = &self.merge_path;
 
         let encoded_record_len = record.calculate_encoded_length() as u32;

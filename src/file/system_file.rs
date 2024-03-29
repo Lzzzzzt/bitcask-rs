@@ -13,6 +13,7 @@ pub struct SystemFile {
 }
 
 impl SystemFile {
+    #[allow(unused)]
     pub fn new(filename: impl AsRef<Path>) -> BCResult<Self> {
         OpenOptions::new()
             .create(true)
@@ -25,12 +26,8 @@ impl SystemFile {
 }
 
 impl IO for SystemFile {
-    fn write(&mut self, buf: &[u8], offset: u32) -> BCResult<u32> {
-        let write_size = self
-            .fd
-            .write_at(buf, offset as u64)
-            .map_err(Errors::WriteDataFileFaild)?;
-        Ok(write_size as u32)
+    fn write(&mut self, buf: &[u8], _: u32) -> BCResult<u32> {
+        Ok(self.fd.write(buf).map_err(Errors::WriteDataFileFaild)? as u32)
     }
 
     fn read(&self, buf: &mut [u8], offset: u32) -> BCResult<usize> {

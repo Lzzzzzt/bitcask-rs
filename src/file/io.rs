@@ -27,6 +27,7 @@ pub trait IO: Sync + Send {
     fn sync(&self) -> BCResult<()>;
 }
 
-pub fn create_io_manager(filename: impl AsRef<Path>) -> BCResult<Box<dyn IO>> {
-    Ok(Box::new(SystemFile::new(filename)?))
+pub fn create_io_manager(filename: impl AsRef<Path>) -> BCResult<SystemFile> {
+    SystemFile::new(filename)
+    // IoUring::new(filename)
 }
