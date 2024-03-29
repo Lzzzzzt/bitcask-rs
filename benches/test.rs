@@ -2,7 +2,6 @@ use std::{path::PathBuf, sync::Arc, thread, time::Instant};
 
 use bitcask_rs::{config::Config, db::DBEngine};
 use fake::{faker::lorem::en::Sentence, Fake};
-use rand::random;
 
 fn open(temp_dir: PathBuf) -> DBEngine {
     let config = Config {
