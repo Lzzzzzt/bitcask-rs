@@ -30,6 +30,8 @@ pub trait Indexer: Sync + Send {
     /// + `Ok(())` means the key-position set have been removed succussfully, and the position will be return
     /// + `Err()` means the given key is not found, so that this function call is failed
     fn del(&self, key: &[u8]) -> BCResult<()>;
+
+    fn exist(&self, key: &[u8]) -> bool;
 }
 
 pub fn create_indexer(index_type: &IndexType, index_num: u8) -> Vec<Box<dyn Indexer>> {

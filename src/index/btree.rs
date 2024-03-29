@@ -27,6 +27,10 @@ impl Indexer for BTree {
         map.remove(key).ok_or(Errors::KeyNotFound)?;
         Ok(())
     }
+
+    fn exist(&self, key: &[u8]) -> bool {
+        self.inner.read().contains_key(key)
+    }
 }
 
 #[cfg(test)]

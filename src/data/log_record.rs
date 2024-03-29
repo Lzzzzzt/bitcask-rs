@@ -241,8 +241,8 @@ impl Record {
         bytes.put_u32(self.value.len() as u32);
 
         // store the key/value set
-        bytes.extend_from_slice(&self.value);
-        bytes.extend_from_slice(&self.key);
+        bytes.extend(&self.value);
+        bytes.extend(&self.key);
 
         // calculate crc then store it
         let crc = calculate_crc_checksum(&bytes);
