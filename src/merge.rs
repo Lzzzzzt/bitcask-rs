@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::fs;
+
 use std::path::{Path, PathBuf};
 
-use parking_lot::RwLock;
+use tokio::sync::RwLock;
 
 use crate::data::data_file::{data_file_name, DataFile};
 use crate::data::log_record::{Record, RecordPosition};
@@ -13,36 +13,41 @@ use crate::DB_DATA_FILE_SUFFIX;
 use crate::DB_MERGE_FIN_FILE;
 
 impl DBEngine {
-    pub fn merge(&self) -> BCResult<()> {
+    pub async fn merge(&self) -> BCResult<()> {
         // TODO: Check Engine is not empty
 
         #[allow(unused)]
-        let lock = self.merge_lock.try_lock().ok_or(Errors::DBIsMerging)?;
+        let lock = match self.merge_lock.try_lock() {
+            Ok(lock) => lock,
+            Err(_) => return Err(Errors::DBIsInUsing),
+        };
 
         let merge_directory = merge_path(&self.config.db_path);
 
         if merge_directory.is_dir() {
-            std::fs::remove_dir_all(&merge_directory).unwrap();
+            tokio::fs::remove_dir_all(&merge_directory).await.unwrap();
         }
 
-        std::fs::create_dir_all(&merge_directory).map_err(|e| {
-            Errors::CreateMergeDirFailed(
-                merge_directory
-                    .to_string_lossy()
-                    .to_string()
-                    .into_boxed_str(),
-                e,
-            )
-        })?;
+        tokio::fs::create_dir_all(&merge_directory)
+            .await
+            .map_err(|e| {
+                Errors::CreateMergeDirFailed(
+                    merge_directory
+                        .to_string_lossy()
+                        .to_string()
+                        .into_boxed_str(),
+                    e,
+                )
+            })?;
 
-        let merge_files = self.get_merge_files(&merge_directory)?;
+        let merge_files = self.get_merge_files(&merge_directory).await?;
         let merge_engine = MergeEngine::new(&merge_directory, self.config.file_size_threshold)?;
         let mut hint = DataFile::hint_file(&merge_directory)?;
 
         for file in merge_files.iter() {
             let mut offset = 0;
             loop {
-                let (size, mut record) = match file.read_record(offset) {
+                let (size, mut record) = match file.read_record(offset).await {
                     Ok(record) => (record.size(), record.into_log_record()),
                     Err(Errors::DataFileEndOfFile) => break,
                     Err(e) => return Err(e),
@@ -51,8 +56,10 @@ impl DBEngine {
                 if let Some(pos) = self.get_index(&record.key).get(&record.key) {
                     if pos.fid == file.id && pos.offset == offset {
                         record.disable_transaction();
-                        let position = merge_engine.append_log_record(&record)?;
-                        hint.write_record(&Record::normal(record.key, position.encode()))?;
+                        let position = merge_engine.append_log_record(&record).await?;
+
+                        hint.write_record(&Record::normal(record.key, position.encode()))
+                            .await?;
                     }
                 }
 
@@ -60,26 +67,26 @@ impl DBEngine {
             }
         }
 
-        hint.sync()?;
-        merge_engine.sync()?;
+        hint.sync().await?;
+        merge_engine.sync().await?;
 
         let mut merge_finish_file = DataFile::merge_finish_file(&merge_directory)?;
         let unmerged_fid = merge_files.last().unwrap().id + 1;
         let merge_finish_record = Record::merge_finished(unmerged_fid);
-        merge_finish_file.write_record(&merge_finish_record)?;
+        merge_finish_file.write_record(&merge_finish_record).await?;
 
-        merge_finish_file.sync()?;
+        merge_finish_file.sync().await?;
 
         Ok(())
     }
 
-    fn get_merge_files<P: AsRef<Path>>(&self, path: P) -> BCResult<Vec<DataFile>> {
-        let mut archive = self.archive.write();
+    async fn get_merge_files<P: AsRef<Path>>(&self, path: P) -> BCResult<Vec<DataFile>> {
+        let mut archive = self.archive.write().await;
 
         // create a new active file for write
-        let mut active_file = self.active.write();
+        let mut active_file = self.active.write().await;
         // sync the old active file
-        active_file.sync()?;
+        active_file.sync().await?;
 
         let active_fid = active_file.id;
         let old_active_file =
@@ -97,7 +104,7 @@ impl DBEngine {
         Ok(merge_file)
     }
 
-    pub(crate) fn load_merged_file<P: AsRef<Path>>(dir: P) -> BCResult<()> {
+    pub(crate) async fn load_merged_file<P: AsRef<Path>>(dir: P) -> BCResult<()> {
         let path = merge_path(&dir);
         if !path.is_dir() {
             return Ok(());
@@ -120,12 +127,12 @@ impl DBEngine {
         });
 
         if !merge_finished {
-            fs::remove_dir_all(&path).unwrap();
+            tokio::fs::remove_dir_all(&path).await.unwrap();
             return Ok(());
         }
 
         let merge_finish_file = DataFile::merge_finish_file(&path)?;
-        let record = merge_finish_file.read_record(0)?;
+        let record = merge_finish_file.read_record(0).await?;
         let bytes = record.value().first_chunk().unwrap();
         let unmerged_id = u32::from_be_bytes(*bytes);
 
@@ -133,14 +140,14 @@ impl DBEngine {
         for fid in 0..unmerged_id {
             let filename = data_file_name(&path, fid);
             if filename.is_file() {
-                std::fs::remove_file(filename).unwrap();
+                tokio::fs::remove_file(filename).await.unwrap();
             }
         }
         // cp merged file to db path
         for f in merged_filenames {
             let src = path.join(&f);
             let dst = dir.as_ref().join(&f);
-            std::fs::rename(src, dst).unwrap();
+            tokio::fs::rename(src, dst).await.unwrap();
         }
 
         std::fs::remove_dir(path).unwrap();
@@ -166,18 +173,18 @@ impl MergeEngine {
         })
     }
 
-    pub(crate) fn append_log_record(&self, record: &Record) -> BCResult<RecordPosition> {
+    pub(crate) async fn append_log_record(&self, record: &Record) -> BCResult<RecordPosition> {
         let db_path = &self.merge_path;
 
         let encoded_record_len = record.calculate_encoded_length() as u32;
 
         // fetch active file
-        let mut active_file = self.active.write();
+        let mut active_file = self.active.write().await;
 
         // check current active file size is small then config.data_file_size
         if active_file.write_offset + encoded_record_len > self.file_size_threshold {
             // sync active file
-            active_file.sync()?;
+            active_file.sync().await?;
 
             let current_file_id = active_file.id;
             // create new active file and store active file into old file
@@ -187,12 +194,13 @@ impl MergeEngine {
             );
             self.archive
                 .write()
+                .await
                 .insert(current_file_id, current_active_file);
         }
 
         // append record into active file
         let write_offset = active_file.write_offset;
-        active_file.write_record(record)?;
+        active_file.write_record(record).await?;
 
         let write_size = active_file.write_offset - write_offset;
 
@@ -204,14 +212,14 @@ impl MergeEngine {
         })
     }
 
-    pub fn sync(&self) -> BCResult<()> {
-        self.active.read().sync()
+    pub async fn sync(&self) -> BCResult<()> {
+        self.active.read().await.sync().await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, thread};
+    use std::sync::Arc;
 
     use fake::{
         faker::lorem::en::{Sentence, Word},
@@ -222,10 +230,10 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn merge() -> BCResult<()> {
+    #[tokio::test]
+    async fn merge() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
         let word = Word();
         let sentence = Sentence(64..65);
 
@@ -233,25 +241,25 @@ mod tests {
         let test_vals = (0..1024).map(|_| sentence.fake::<String>());
 
         for (k, v) in test_keys.clone().zip(test_vals) {
-            engine.put(k.into_bytes(), v.into_bytes())?;
+            engine.put(k, v).await?;
         }
 
         for (i, k) in test_keys.enumerate() {
             if i != 32 {
-                engine.del(k.as_bytes())?;
+                engine.del(k).await?;
             }
         }
 
-        let res = engine.merge();
+        let res = engine.merge().await;
         assert!(res.is_ok());
 
         Ok(())
     }
 
-    #[test]
-    fn merge_multithread() -> BCResult<()> {
+    #[tokio::test]
+    async fn merge_multithread() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
         let word = Word();
         let sentence = Sentence(64..65);
 
@@ -259,34 +267,34 @@ mod tests {
         let test_vals = (0..1024).map(|_| sentence.fake::<String>());
 
         for (k, v) in test_keys.clone().zip(test_vals) {
-            engine.put(k.into_bytes(), v.into_bytes())?;
+            engine.put(k, v).await?;
         }
 
         for (i, k) in test_keys.enumerate() {
             if i != 32 {
-                engine.del(k.as_bytes())?;
+                engine.del(k).await?;
             }
         }
 
         let engine = Arc::new(engine);
 
         let e = Arc::clone(&engine);
-        let merge_handler = thread::spawn(move || {
-            let res = e.merge();
+        let merge_handler = tokio::spawn(async move {
+            let res = e.merge().await;
             assert!(res.is_ok());
         });
 
-        let put_handler = thread::spawn(move || {
+        let put_handler = tokio::spawn(async move {
             let test_keys = (0..1024).map(|_| word.fake::<String>());
             let test_vals = (0..1024).map(|_| sentence.fake::<String>());
 
             for (k, v) in test_keys.clone().zip(test_vals) {
-                engine.put(k.into_bytes(), v.into_bytes()).unwrap();
+                engine.put(k, v).await.unwrap();
             }
         });
 
-        merge_handler.join().unwrap();
-        put_handler.join().unwrap();
+        merge_handler.await.unwrap();
+        put_handler.await.unwrap();
 
         Ok(())
     }

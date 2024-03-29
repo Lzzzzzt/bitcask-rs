@@ -27,17 +27,17 @@ impl SystemFile {
 }
 
 impl IO for SystemFile {
-    fn write(&mut self, buf: &[u8], _: u32) -> BCResult<u32> {
+    async fn write(&mut self, buf: &[u8], _: u32) -> BCResult<u32> {
         Ok(self.fd.write(buf).map_err(Errors::WriteDataFileFaild)? as u32)
     }
 
-    fn read(&self, buf: &mut [u8], offset: u32) -> BCResult<usize> {
+    async fn read(&self, buf: &mut [u8], offset: u32) -> BCResult<usize> {
         self.fd
             .read_at(buf, offset as u64)
             .map_err(Errors::ReadDataFileFaild)
     }
 
-    fn sync(&self) -> BCResult<()> {
+    async fn sync(&self) -> BCResult<()> {
         self.fd.sync_all().map_err(Errors::SyncDataFileFaild)
     }
 }
@@ -58,45 +58,45 @@ mod tests {
 
     use super::{BCResult, SystemFile};
 
-    #[test]
-    fn write() -> BCResult<()> {
+    #[tokio::test]
+    async fn write() -> BCResult<()> {
         let path = tempfile::tempfile().unwrap();
         let mut system_file: SystemFile = path.into();
 
-        let write_size = system_file.write("Hello".as_bytes(), 0)?;
+        let write_size = system_file.write("Hello".as_bytes(), 0).await?;
         assert_eq!(write_size, 5);
 
         Ok(())
     }
 
-    #[test]
-    fn read() -> BCResult<()> {
+    #[tokio::test]
+    async fn read() -> BCResult<()> {
         let mut path = tempfile::tempfile().unwrap();
         path.write_all(b"Hello World").unwrap();
 
         let system_file: SystemFile = path.into();
         let mut buf = [0u8; 5];
 
-        let read_size = system_file.read(&mut buf, 0)?;
+        let read_size = system_file.read(&mut buf, 0).await?;
         assert_eq!(read_size, 5);
         assert_eq!(b"Hello", &buf);
 
-        let read_size = system_file.read(&mut buf, 6)?;
+        let read_size = system_file.read(&mut buf, 6).await?;
         assert_eq!(read_size, 5);
         assert_eq!(b"World", &buf);
 
         Ok(())
     }
 
-    #[test]
-    fn sync() -> BCResult<()> {
+    #[tokio::test]
+    async fn sync() -> BCResult<()> {
         let path = tempfile::tempfile().unwrap();
         let mut system_file: SystemFile = path.into();
 
-        let write_size = system_file.write("Hello".as_bytes(), 0)?;
+        let write_size = system_file.write("Hello".as_bytes(), 0).await?;
         assert_eq!(write_size, 5);
 
-        system_file.sync()?;
+        system_file.sync().await?;
 
         Ok(())
     }

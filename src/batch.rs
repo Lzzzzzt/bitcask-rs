@@ -62,7 +62,7 @@ impl<'a> WriteBatch<'a> {
     }
 
     /// write the staging data into file, the update memory index
-    pub fn commit(&mut self) -> BCResult<()> {
+    pub async fn commit(&mut self) -> BCResult<()> {
         let pending = std::mem::take(self.pending.get_mut());
 
         if pending.is_empty() {
@@ -86,17 +86,18 @@ impl<'a> WriteBatch<'a> {
             v.key = k;
             let record = v.enable_transaction(seq);
 
-            let pos = self.engine.append_log_record(&record)?;
+            let pos = self.engine.append_log_record(&record).await?;
 
             record_and_position.push((record, pos));
         }
 
         // append batch finished record
         self.engine
-            .append_log_record(&Record::batch_finished(seq))?;
+            .append_log_record(&Record::batch_finished(seq))
+            .await?;
 
         if self.config.sync_write {
-            self.engine.sync()?;
+            self.engine.sync().await?;
         }
 
         // update memory index
@@ -126,10 +127,10 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn batch_put() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn batch_put() -> Result<(), Box<dyn Error>> {
         let temp_dir = tempfile::tempdir()?;
-        let engine = DBEngine::open(Config::test_config(temp_dir.path().to_path_buf()))?;
+        let engine = DBEngine::open(Config::test_config(temp_dir.path().to_path_buf())).await?;
 
         let mut batch = engine.new_write_batch(WriteBatchConfig::default())?;
 
@@ -147,11 +148,11 @@ mod tests {
         );
         assert!(res.is_ok());
 
-        let res = engine.get(&key1);
+        let res = engine.get(&key1).await;
         assert!(matches!(res.unwrap_err(), Errors::KeyNotFound));
 
-        batch.commit()?;
-        let res = engine.get(&key1);
+        batch.commit().await?;
+        let res = engine.get(&key1).await;
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), value1);
 
@@ -161,10 +162,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn batch_del() -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn batch_del() -> Result<(), Box<dyn Error>> {
         let temp_dir = tempfile::tempdir()?;
-        let engine = DBEngine::open(Config::test_config(temp_dir.path().to_path_buf()))?;
+        let engine = DBEngine::open(Config::test_config(temp_dir.path().to_path_buf())).await?;
 
         let mut batch = engine.new_write_batch(WriteBatchConfig::default())?;
 
@@ -183,12 +184,12 @@ mod tests {
 
         assert!(batch.del(&key1).is_ok());
 
-        batch.commit()?;
+        batch.commit().await?;
 
-        let res = engine.get(&key1);
+        let res = engine.get(&key1).await;
         assert!(matches!(res.unwrap_err(), Errors::KeyNotFound));
 
-        let res = engine.get(&key2);
+        let res = engine.get(&key2).await;
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), value2);
 

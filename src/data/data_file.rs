@@ -47,26 +47,26 @@ impl DataFile {
         })
     }
 
-    pub fn write_record(&mut self, record: &Record) -> BCResult<u32> {
-        let encoded = record.encode();
-        let write_size = self.io.write(&encoded, self.write_offset)?;
+    pub async fn write_record(&mut self, record: &Record) -> BCResult<u32> {
+        let encoded = record.encode().await;
+        let write_size = self.io.write(&encoded, self.write_offset).await?;
         self.write_offset += write_size;
         Ok(write_size)
     }
 
     /// read `ReadLogRecord` from data file by offset
-    pub fn read_record(&self, offset: u32) -> BCResult<ReadRecord> {
-        ReadRecord::decode(&self.io, offset)
+    pub async fn read_record(&self, offset: u32) -> BCResult<ReadRecord> {
+        ReadRecord::decode(&self.io, offset).await
     }
 
-    pub fn read_record_with_size(&self, offset: u32, size: u32) -> BCResult<ReadRecord> {
+    pub async fn read_record_with_size(&self, offset: u32, size: u32) -> BCResult<ReadRecord> {
         let mut data = vec![0; size as usize];
-        self.io.read(&mut data, offset)?;
-        ReadRecord::decode_vec(data)
+        self.io.read(&mut data, offset).await?;
+        ReadRecord::decode_vec(data).await
     }
 
-    pub fn sync(&self) -> BCResult<()> {
-        self.io.sync()
+    pub async fn sync(&self) -> BCResult<()> {
+        self.io.sync().await
     }
 }
 
@@ -82,8 +82,8 @@ mod tests {
 
     use super::DataFile;
 
-    #[test]
-    fn new() -> BCResult<()> {
+    #[tokio::test]
+    async fn new() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
         let data_file1 = DataFile::new(temp_dir.path(), 0)?;
         assert_eq!(data_file1.id, 0);
@@ -97,35 +97,35 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn write() -> BCResult<()> {
+    #[tokio::test]
+    async fn write() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
         let mut data_file = DataFile::new(temp_dir.path(), 0)?;
         assert_eq!(data_file.id, 0);
 
         let record = Record::normal("foo".into(), "bar".into());
 
-        let encoded_record = record.encode();
-        let write_size = data_file.write_record(&record)?;
+        let encoded_record = record.encode().await;
+        let write_size = data_file.write_record(&record).await?;
         assert_eq!(encoded_record.len() as u32, write_size);
 
         let record = Record::normal("foo".into(), "".into());
 
-        let encoded_record = record.encode();
-        let write_size = data_file.write_record(&record)?;
+        let encoded_record = record.encode().await;
+        let write_size = data_file.write_record(&record).await?;
         assert_eq!(encoded_record.len() as u32, write_size);
 
         let record = Record::deleted("foo".into());
 
-        let encoded_record = record.encode();
-        let write_size = data_file.write_record(&record)?;
+        let encoded_record = record.encode().await;
+        let write_size = data_file.write_record(&record).await?;
         assert_eq!(encoded_record.len() as u32, write_size);
 
         Ok(())
     }
 
-    #[test]
-    fn read() -> BCResult<()> {
+    #[tokio::test]
+    async fn read() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
 
         let mut data_file = DataFile::new(temp_dir.path(), 0)?;
@@ -134,9 +134,9 @@ mod tests {
         // normal record
         let record = Record::normal("foo".into(), "baraaa".into());
 
-        data_file.write_record(&record)?;
+        data_file.write_record(&record).await?;
 
-        let read_record = data_file.read_record(0)?;
+        let read_record = data_file.read_record(0).await?;
 
         let mut size = read_record.size();
 
@@ -147,9 +147,9 @@ mod tests {
         // value is empty
         let record = Record::normal("foo".into(), Default::default());
 
-        data_file.write_record(&record)?;
+        data_file.write_record(&record).await?;
 
-        let read_record = data_file.read_record(size)?;
+        let read_record = data_file.read_record(size).await?;
         size += read_record.size();
 
         assert_eq!(record.key, read_record.key());
@@ -159,9 +159,9 @@ mod tests {
         // type is deleted
         let record = Record::deleted("foo".into());
 
-        data_file.write_record(&record)?;
+        data_file.write_record(&record).await?;
 
-        let read_record = data_file.read_record(size)?;
+        let read_record = data_file.read_record(size).await?;
 
         assert_eq!(record.key, read_record.key());
         assert_eq!(record.value, read_record.value());
@@ -170,17 +170,17 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn sync() -> BCResult<()> {
+    #[tokio::test]
+    async fn sync() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
         let mut data_file = DataFile::new(temp_dir.path(), 0)?;
         assert_eq!(data_file.id, 0);
 
         let record = Record::normal("foo".into(), "baraaa".into());
 
-        data_file.write_record(&record)?;
+        data_file.write_record(&record).await?;
 
-        data_file.sync()?;
+        data_file.sync().await?;
 
         Ok(())
     }

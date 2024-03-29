@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 
 use fs4::FileExt;
 use hashbrown::HashMap;
-use parking_lot::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
 use crate::data::data_file::DataFile;
@@ -33,21 +33,23 @@ pub struct DBEngine {
 
 impl DBEngine {
     /// Open the Bitcask DBEngine
-    pub fn open(config: Config) -> BCResult<Self> {
+    pub async fn open(config: Config) -> BCResult<Self> {
         // check the config
         config.check()?;
 
         // check the data file directory is existed, if not, then create it
-        fs::create_dir_all(&config.db_path).map_err(|e| {
-            Errors::CreateDBDirFailed(
-                config
-                    .db_path
-                    .to_string_lossy()
-                    .to_string()
-                    .into_boxed_str(),
-                e,
-            )
-        })?;
+        tokio::fs::create_dir_all(&config.db_path)
+            .await
+            .map_err(|e| {
+                Errors::CreateDBDirFailed(
+                    config
+                        .db_path
+                        .to_string_lossy()
+                        .to_string()
+                        .into_boxed_str(),
+                    e,
+                )
+            })?;
 
         // file lock, make sure the db dir is used by one engine
         let lock_file = fs::OpenOptions::new()
@@ -62,7 +64,7 @@ impl DBEngine {
             .try_lock_exclusive()
             .map_err(|_| Errors::DBIsInUsing)?;
 
-        Self::load_merged_file(&config.db_path)?;
+        Self::load_merged_file(&config.db_path).await?;
 
         let mut data_files = load_data_file(&config.db_path)?;
 
@@ -92,17 +94,17 @@ impl DBEngine {
         // put the active file id into file ids
         engine.fids.push(active_file_id);
 
-        engine.load_index()?;
+        engine.load_index().await?;
 
         Ok(engine)
     }
 
-    pub fn close(&self) -> BCResult<()> {
+    pub async fn close(&self) -> BCResult<()> {
         if !self.config.db_path.is_dir() {
             return Ok(());
         }
 
-        self.sync()?;
+        self.sync().await?;
         self.lock_file.unlock().unwrap();
         Ok(())
     }
@@ -113,7 +115,7 @@ impl DBEngine {
     /// + `value`: Bytes
     /// ## Return Value
     /// will return `Err` when `key` is empty
-    pub fn put<T: Into<Vec<u8>>>(&self, key: T, value: T) -> BCResult<()> {
+    pub async fn put<T: Into<Vec<u8>>>(&self, key: T, value: T) -> BCResult<()> {
         let key = key.into();
         let value = value.into();
         // make sure the key is valid
@@ -123,7 +125,7 @@ impl DBEngine {
         let record = Record::normal(key, value);
 
         // append the record in the data file
-        let record_positoin = self.append_log_record(&record)?;
+        let record_positoin = self.append_log_record(&record).await?;
 
         // update in-memory index
         self.get_index(&record.key)
@@ -132,7 +134,12 @@ impl DBEngine {
         Ok(())
     }
 
-    pub fn put_expire<T: Into<Vec<u8>>>(&self, key: T, value: T, expire: Duration) -> BCResult<()> {
+    pub async fn put_expire<T: Into<Vec<u8>>>(
+        &self,
+        key: T,
+        value: T,
+        expire: Duration,
+    ) -> BCResult<()> {
         let key = key.into();
         let value = value.into();
         // make sure the key is valid
@@ -142,7 +149,7 @@ impl DBEngine {
         let record = Record::normal(key, value).expire(expire)?;
 
         // append the record in the data file
-        let record_positoin = self.append_log_record(&record)?;
+        let record_positoin = self.append_log_record(&record).await?;
 
         // update in-memory index
         self.get_index(&record.key)
@@ -156,7 +163,7 @@ impl DBEngine {
     /// + `key`: Bytes, should not be empty
     /// ## Return Value
     /// will return `Err` when `key` is empty
-    pub fn get<T: AsRef<[u8]>>(&self, key: T) -> BCResult<Vec<u8>> {
+    pub async fn get<T: AsRef<[u8]>>(&self, key: T) -> BCResult<Vec<u8>> {
         let key = key.as_ref();
         // make sure the key is valid
         check_key_valid(key)?;
@@ -165,7 +172,7 @@ impl DBEngine {
         let record_position = self.get_index(key).get(key).ok_or(Errors::KeyNotFound)?;
 
         // get record
-        let record = self.get_record_with_position(record_position)?;
+        let record = self.get_record_with_position(record_position).await?;
 
         // check the record is expired or not
         if let RecordExpireState::Enable(ts) = record.expire {
@@ -188,44 +195,45 @@ impl DBEngine {
     /// Delete the key-value set
     /// ## Parameter
     /// + `key`: Bytes, should not be empty
-    pub fn del<T: AsRef<[u8]>>(&self, key: T) -> BCResult<()> {
+    pub async fn del<T: AsRef<[u8]>>(&self, key: T) -> BCResult<()> {
         let key = key.as_ref();
 
         check_key_valid(key)?;
 
-        let real_index = self.get_index(key);
-        match real_index.get(key) {
+        let index = self.get_index(key);
+
+        match index.get(key) {
             Some(_) => (),
             None => return Ok(()),
         };
 
         let record = Record::deleted(key.to_vec());
 
-        self.append_log_record(&record)?;
+        self.append_log_record(&record).await?;
 
-        real_index
+        index
             .del(key)
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
 
         Ok(())
     }
 
-    pub fn sync(&self) -> BCResult<()> {
-        self.active.read().sync()
+    pub async fn sync(&self) -> BCResult<()> {
+        self.active.read().await.sync().await
     }
 
-    pub(crate) fn append_log_record(&self, record: &Record) -> BCResult<RecordPosition> {
+    pub(crate) async fn append_log_record(&self, record: &Record) -> BCResult<RecordPosition> {
         let db_path = &self.config.db_path;
 
         let encoded_record_len = record.calculate_encoded_length() as u32;
 
         // fetch active file
-        let mut active_file = self.active.write();
+        let mut active_file = self.active.write().await;
 
         // check current active file size is small then config.data_file_size
         if active_file.write_offset + encoded_record_len > self.config.file_size_threshold {
             // sync active file
-            active_file.sync()?;
+            active_file.sync().await?;
 
             let current_file_id = active_file.id;
             // create new active file and store active file into old file
@@ -236,12 +244,13 @@ impl DBEngine {
 
             self.archive
                 .write()
+                .await
                 .insert(current_file_id, current_active_file);
         }
 
         // append record into active file
         let write_offset = active_file.write_offset;
-        active_file.write_record(record)?;
+        active_file.write_record(record).await?;
 
         let write_size = active_file.write_offset - write_offset;
 
@@ -252,7 +261,7 @@ impl DBEngine {
             && self.config.bytes_per_sync > 0
             && self.bytes_written.load(Ordering::SeqCst) / self.config.bytes_per_sync >= 1
         {
-            active_file.sync()?;
+            active_file.sync().await?;
         }
 
         // construct in-memory index infomation
@@ -263,12 +272,12 @@ impl DBEngine {
         })
     }
 
-    fn load_index(&self) -> BCResult<()> {
-        self.load_index_from_hint_file()?;
-        self.load_index_from_data_file()
+    async fn load_index(&self) -> BCResult<()> {
+        self.load_index_from_hint_file().await?;
+        self.load_index_from_data_file().await
     }
 
-    fn load_index_from_hint_file(&self) -> BCResult<()> {
+    async fn load_index_from_hint_file(&self) -> BCResult<()> {
         let path = merge_path(&self.config.db_path);
 
         if !path.is_dir() {
@@ -279,7 +288,7 @@ impl DBEngine {
         let mut offset = 0;
 
         loop {
-            match hint_file.read_record(offset) {
+            match hint_file.read_record(offset).await {
                 Ok(record) => {
                     offset += record.size();
 
@@ -295,7 +304,7 @@ impl DBEngine {
     }
 
     /// load index information from data file, will traverse all the data file, then process the record in order
-    fn load_index_from_data_file(&self) -> BCResult<()> {
+    async fn load_index_from_data_file(&self) -> BCResult<()> {
         if self.fids.is_empty() {
             return Ok(());
         }
@@ -306,7 +315,7 @@ impl DBEngine {
 
         if merge_finish_file.is_file() {
             let merge_finish_file = DataFile::merge_finish_file(merge_finish_file)?;
-            let record = merge_finish_file.read_record(0)?;
+            let record = merge_finish_file.read_record(0).await?;
             let fid_bytes = record.value().first_chunk::<4>().unwrap();
             unmerged_fid = u32::from_be_bytes(*fid_bytes);
             merged = true;
@@ -323,17 +332,19 @@ impl DBEngine {
                 continue;
             }
 
-            self.update_index_batched(id, &mut batched_record)?;
+            self.update_index_batched(id, &mut batched_record).await?;
         }
 
         // update index from active file
-        self.active.write().write_offset =
-            self.update_index_batched(*active_file_id, &mut batched_record)?;
+        let ws = self
+            .update_index_batched(*active_file_id, &mut batched_record)
+            .await?;
+        self.active.write().await.write_offset = ws;
 
         Ok(())
     }
 
-    fn update_index_batched(
+    async fn update_index_batched(
         &self,
         id: u32,
         batched: &mut HashMap<u64, Vec<ReadRecord>>,
@@ -342,7 +353,7 @@ impl DBEngine {
         let mut current_seq_no = self.batch_seq.load(Ordering::SeqCst);
 
         loop {
-            let (record_len, record) = match self.get_record(id, offset) {
+            let (record_len, record) = match self.get_record(id, offset).await {
                 Ok(record) => (record.size(), record),
                 Err(Errors::DataFileEndOfFile) => break,
                 Err(e) => return Err(e),
@@ -394,28 +405,33 @@ impl DBEngine {
         }
     }
 
-    fn get_record(&self, id: u32, offset: u32) -> BCResult<ReadRecord> {
-        let active_file = self.active.read();
-        let old_files = self.archive.read();
+    async fn get_record(&self, id: u32, offset: u32) -> BCResult<ReadRecord> {
+        let active_file = self.active.read().await;
 
         if active_file.id == id {
-            active_file.read_record(offset)
+            active_file.read_record(offset).await
         } else {
-            old_files.get(&id).unwrap().read_record(offset)
+            let old_files = self.archive.read().await;
+
+            old_files.get(&id).unwrap().read_record(offset).await
         }
     }
 
-    fn get_record_with_position(&self, position: RecordPosition) -> BCResult<ReadRecord> {
-        let active_file = self.active.read();
-        let old_files = self.archive.read();
+    async fn get_record_with_position(&self, position: RecordPosition) -> BCResult<ReadRecord> {
+        let active_file = self.active.read().await;
 
         if active_file.id == position.fid {
-            active_file.read_record_with_size(position.offset, position.size)
+            active_file
+                .read_record_with_size(position.offset, position.size)
+                .await
         } else {
+            let old_files = self.archive.read().await;
+
             old_files
                 .get(&position.fid)
                 .unwrap()
                 .read_record_with_size(position.offset, position.size)
+                .await
         }
     }
 
@@ -429,9 +445,7 @@ impl DBEngine {
 }
 
 impl Drop for DBEngine {
-    fn drop(&mut self) {
-        if self.close().ok().is_some() {}
-    }
+    fn drop(&mut self) {}
 }
 
 fn load_data_file(dir: impl AsRef<Path>) -> BCResult<Vec<DataFile>> {
@@ -468,53 +482,51 @@ fn load_data_file(dir: impl AsRef<Path>) -> BCResult<Vec<DataFile>> {
 
 #[cfg(test)]
 mod tests {
-
-    use std::thread::sleep;
-
     use fake::faker::lorem::en::{Sentence, Word};
     use fake::Fake;
+    use tokio::time::sleep;
 
     use crate::utils::tests::open;
 
     use super::*;
 
-    #[test]
-    fn put() -> BCResult<()> {
+    #[tokio::test]
+    async fn put() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
         let word = Word();
         let sentence = Sentence(64..65);
 
         // put one normal record
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
         let res_value = res.unwrap();
         assert_eq!(value.as_bytes(), res_value);
 
         // put the same key with different value
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
         let res_value = res.unwrap();
         assert_eq!(value.as_bytes(), res_value);
 
         // key is empty
-        let res = engine.put(Default::default(), value.clone());
+        let res = engine.put(Default::default(), value.clone()).await;
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Errors::KeyEmpty));
 
         // value is empty
         let key: String = word.fake();
         let value: String = Default::default();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
         let res_value = res.unwrap();
         assert_eq!(value.as_bytes(), res_value);
@@ -523,19 +535,19 @@ mod tests {
         for _ in 0..200000 {
             let key: String = word.fake();
             let value: String = sentence.fake();
-            engine.put(key, value)?;
+            engine.put(key, value).await?;
         }
 
         // reboot, then put
-        engine.close()?;
+        engine.close().await?;
 
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
 
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         let res = dbg!(res);
         assert!(res.is_ok());
         let res_value = res.unwrap();
@@ -544,123 +556,125 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn expire() -> BCResult<()> {
+    #[tokio::test]
+    async fn expire() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
         let word = Word();
         let sentence = Sentence(64..65);
 
         // put one normal record
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put_expire(key.clone(), value.clone(), Duration::from_secs(3));
+        let res = engine
+            .put_expire(key.clone(), value.clone(), Duration::from_secs(3))
+            .await;
         assert!(res.is_ok());
 
-        sleep(Duration::from_secs(1));
+        sleep(Duration::from_secs(1)).await;
 
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
 
-        sleep(Duration::from_secs(2));
+        sleep(Duration::from_secs(2)).await;
 
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_err());
 
         Ok(())
     }
 
-    #[test]
-    fn get() -> BCResult<()> {
+    #[tokio::test]
+    async fn get() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
         let word = Word();
         let sentence = Sentence(64..65);
 
         // get one normal record
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
         assert_eq!(value.as_bytes(), res.unwrap());
 
         // get the inexistent key;
-        let res = engine.get(word.fake::<String>().as_bytes());
+        let res = engine.get(word.fake::<String>().as_bytes()).await;
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Errors::KeyNotFound));
 
         // read after value is repeated put
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
         assert_eq!(value.as_bytes(), res.unwrap());
 
         // read after delete
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.del(key.as_bytes());
+        let res = engine.del(key.as_bytes()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Errors::KeyNotFound));
 
         // read from old data files instead of active file
         let old_key: String = "111".into();
         let old_value: String = "222".into();
-        engine.put(old_key.clone(), old_value.clone())?;
+        engine.put(old_key.clone(), old_value.clone()).await?;
 
         for _ in 0..200000 {
             let key: String = word.fake();
             let value: String = sentence.fake();
-            engine.put(key, value)?;
+            engine.put(key, value).await?;
         }
-        let res = engine.get(old_key.as_bytes());
+        let res = engine.get(old_key.as_bytes()).await;
         assert!(res.is_ok());
         assert_eq!(old_value, String::from_utf8(res.unwrap()).unwrap());
 
-        engine.close()?;
+        engine.close().await?;
 
         // reopen the db, get the old record
-        let engine = open(temp_dir.path().to_path_buf())?;
-        let res = engine.get(old_key.as_bytes());
+        let engine = open(temp_dir.path().to_path_buf()).await?;
+        let res = engine.get(old_key.as_bytes()).await;
         assert!(res.is_ok());
         assert_eq!(old_value, String::from_utf8(res.unwrap()).unwrap());
 
         Ok(())
     }
 
-    #[test]
-    fn del() -> BCResult<()> {
+    #[tokio::test]
+    async fn del() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
         let word = Word();
         let sentence = Sentence(64..65);
 
         // delete a exist key
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
 
-        let res = engine.del(key.as_bytes());
+        let res = engine.del(key.as_bytes()).await;
         assert!(res.is_ok());
 
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Errors::KeyNotFound));
 
         // delete a inexistent key
-        let res = engine.del("111".as_bytes());
+        let res = engine.del("111".as_bytes()).await;
         assert!(res.is_ok());
 
         // delete a empty key
-        let res = engine.del("".as_bytes());
+        let res = engine.del("".as_bytes()).await;
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Errors::KeyEmpty));
 
@@ -668,87 +682,87 @@ mod tests {
         let key: String = word.fake();
         let value = sentence.fake::<String>();
 
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
 
-        let res = engine.del(key.as_bytes());
+        let res = engine.del(key.as_bytes()).await;
         assert!(res.is_ok());
 
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
 
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
         assert_eq!(value.as_bytes(), res.unwrap());
 
         Ok(())
     }
 
-    #[test]
-    fn close() -> BCResult<()> {
+    #[tokio::test]
+    async fn close() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
         let word = Word();
         let sentence = Sentence(64..65);
 
         // get one normal record
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
         assert_eq!(value.as_bytes(), res.unwrap());
 
-        assert!(engine.close().is_ok());
+        assert!(engine.close().await.is_ok());
 
         Ok(())
     }
 
-    #[test]
-    fn sync() -> BCResult<()> {
+    #[tokio::test]
+    async fn sync() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
         let word = Word();
         let sentence = Sentence(64..65);
 
         // get one normal record
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
         assert_eq!(value.as_bytes(), res.unwrap());
 
-        assert!(engine.sync().is_ok());
-        assert!(engine.close().is_ok());
+        assert!(engine.sync().await.is_ok());
+        assert!(engine.close().await.is_ok());
 
         Ok(())
     }
 
-    #[test]
-    fn file_lock() -> BCResult<()> {
+    #[tokio::test]
+    async fn file_lock() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+        let engine = open(temp_dir.path().to_path_buf()).await?;
         let word = Word();
         let sentence = Sentence(64..65);
 
         // get one normal record
         let key: String = word.fake();
         let value = sentence.fake::<String>();
-        let res = engine.put(key.clone(), value.clone());
+        let res = engine.put(key.clone(), value.clone()).await;
         assert!(res.is_ok());
-        let res = engine.get(key.as_bytes());
+        let res = engine.get(key.as_bytes()).await;
         assert!(res.is_ok());
         assert_eq!(value.as_bytes(), res.unwrap());
 
-        let engine2 = open(temp_dir.path().to_path_buf());
+        let engine2 = open(temp_dir.path().to_path_buf()).await;
         assert!(engine2.is_err());
 
-        engine.close()?;
+        engine.close().await?;
 
-        let engine2 = open(temp_dir.path().to_path_buf());
+        let engine2 = open(temp_dir.path().to_path_buf()).await;
         assert!(engine2.is_ok());
 
         Ok(())

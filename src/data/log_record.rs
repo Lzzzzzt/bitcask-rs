@@ -207,7 +207,7 @@ impl Record {
         Ok(self)
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    pub async fn encode(&self) -> Vec<u8> {
         let size = self.calculate_encoded_length();
         let mut bytes = Vec::with_capacity(size);
 
@@ -251,8 +251,8 @@ impl Record {
         bytes
     }
 
-    pub fn crc(&self) -> u32 {
-        let encoded = self.encode();
+    pub async fn crc(&self) -> u32 {
+        let encoded = self.encode().await;
         let crc_bytes = encoded.last_chunk::<4>().unwrap();
         u32::from_be_bytes(*crc_bytes)
     }
@@ -298,9 +298,9 @@ pub struct ReadRecord {
 
 #[allow(unused)]
 impl ReadRecord {
-    pub fn decode<T: IO>(io: &T, offset: u32) -> BCResult<Self> {
+    pub async fn decode<T: IO>(io: &T, offset: u32) -> BCResult<Self> {
         let mut size_bytes: [u8; 8] = [0; 8];
-        io.read(&mut size_bytes, offset)?;
+        io.read(&mut size_bytes, offset).await?;
         let size = u64::from_be_bytes(size_bytes);
 
         if size == 0 {
@@ -309,12 +309,12 @@ impl ReadRecord {
 
         let mut data = vec![0u8; size as usize];
 
-        io.read(&mut data, offset)?;
+        io.read(&mut data, offset).await?;
 
-        Self::decode_vec(data)
+        Self::decode_vec(data).await
     }
 
-    pub fn decode_vec(data: Vec<u8>) -> BCResult<Self> {
+    pub async fn decode_vec(data: Vec<u8>) -> BCResult<Self> {
         let data = data.into_boxed_slice();
 
         let record_crc = calculate_crc_checksum(&data[..data.len() - 4]);
@@ -398,12 +398,12 @@ impl ReadRecord {
 mod tests {
     use super::*;
 
-    #[test]
-    fn record_encode() {
+    #[tokio::test]
+    async fn record_encode() {
         // normal record
         let nomarl_record = Record::normal("foo".into(), "bar".into());
 
-        let encoded_normal_record = nomarl_record.encode();
+        let encoded_normal_record = nomarl_record.encode().await;
 
         assert!(encoded_normal_record.len() > 5);
         // assert_eq!(3762633406, nomarl_record.crc());
@@ -411,7 +411,7 @@ mod tests {
         // value is empty
         let value_is_empty = Record::normal("foo".into(), "".into());
 
-        let encoded_normal_record = value_is_empty.encode();
+        let encoded_normal_record = value_is_empty.encode().await;
 
         assert!(encoded_normal_record.len() > 5);
         // assert_eq!(260641321, value_is_empty.crc());
@@ -419,7 +419,7 @@ mod tests {
         // type is deleted
         let type_is_deleted = Record::deleted("foo".into());
 
-        let encoded_normal_record = type_is_deleted.encode();
+        let encoded_normal_record = type_is_deleted.encode().await;
 
         assert!(encoded_normal_record.len() > 5);
         // assert_eq!(2852002205, type_is_deleted.crc());

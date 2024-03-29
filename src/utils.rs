@@ -29,7 +29,7 @@ pub mod tests {
 
     use crate::{config::Config, db::DBEngine, errors::BCResult};
 
-    pub fn open(temp_dir: PathBuf) -> BCResult<DBEngine> {
+    pub async fn open(temp_dir: PathBuf) -> BCResult<DBEngine> {
         let config = Config {
             file_size_threshold: 64 * 1024 * 1024,
             db_path: temp_dir,
@@ -39,6 +39,6 @@ pub mod tests {
             index_num: 4,
         };
 
-        DBEngine::open(config)
+        DBEngine::open(config).await
     }
 }

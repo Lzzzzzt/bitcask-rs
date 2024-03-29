@@ -3,10 +3,12 @@ use std::{ops::Div, path::PathBuf, time::Instant};
 use bitcask_rs::{config::Config, db::DBEngine};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use fake::{faker::lorem::en::Sentence, Fake};
-use rand::{random, thread_rng, Rng};
+
 use rayon::prelude::*;
 
-fn open(temp_dir: PathBuf) -> DBEngine {
+use rand::random;
+
+async fn open(temp_dir: PathBuf) -> DBEngine {
     let config = Config {
         file_size_threshold: 1 << 30,
         db_path: temp_dir,
@@ -16,87 +18,98 @@ fn open(temp_dir: PathBuf) -> DBEngine {
         index_num: 32,
     };
 
-    DBEngine::open(config).unwrap()
+    DBEngine::open(config).await.unwrap()
 }
 
 fn bench(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
     let temp_dir = tempfile::tempdir().unwrap();
-    let engine = open(temp_dir.path().to_path_buf());
+    let engine = runtime.block_on(async { open(temp_dir.path().to_path_buf()).await });
 
     let key = Sentence(32..64);
     let value = Sentence((3 << 10)..(5 << 10));
 
-    let insert_keys: Vec<String> = (0..100000)
-        .into_par_iter()
-        .map(|_| {
+    let mut insert_keys = Vec::with_capacity(100000);
+
+    runtime.block_on(async {
+        for _ in 0..100000 {
             let k = key.fake::<String>();
-            assert!(engine.put(k.clone(), value.fake::<String>()).is_ok());
-            k
-        })
-        .collect();
+            assert!(engine.put(k.clone(), value.fake::<String>()).await.is_ok());
+            insert_keys.push(k)
+        }
+    });
 
     c.bench_function("get", |b| {
-        b.iter_batched(
-            || &insert_keys[random::<usize>() % 100000],
-            |k| {
-                assert!(engine.get(k).is_ok());
+        b.to_async(&runtime).iter_batched(
+            || insert_keys[random::<usize>() % 100000].clone(),
+            |k| async {
+                assert!(engine.get(k).await.is_ok());
             },
             criterion::BatchSize::SmallInput,
         );
     });
 
     c.bench_function("put", |b| {
-        b.iter_batched(
+        b.to_async(&runtime).iter_batched(
             || (key.fake::<String>(), value.fake::<String>()),
-            |(k, v)| {
-                assert!(engine.put(k, v).is_ok());
+            |(k, v)| async {
+                assert!(engine.put(k, v).await.is_ok());
             },
             criterion::BatchSize::SmallInput,
         );
     });
 
     c.bench_function("del", |b| {
-        b.iter_batched(
+        b.to_async(&runtime).iter_batched(
             || insert_keys[random::<usize>() % 100000].clone(),
-            |k| assert!(engine.del(k.as_bytes()).is_ok()),
+            |k| async {
+                assert!(engine.del(k).await.is_ok());
+            },
             criterion::BatchSize::SmallInput,
         );
     });
 }
 
 fn bench_7_get_3_put(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
     let temp_dir = tempfile::tempdir().unwrap();
-    let engine = open(temp_dir.path().to_path_buf());
+    let engine = runtime.block_on(async { open(temp_dir.path().to_path_buf()).await });
 
     let key = Sentence(32..64);
     let value = Sentence((3 << 10)..(5 << 10));
 
-    let insert_keys: Vec<String> = (0..100000)
-        .into_par_iter()
-        .map(|_| {
-            let k = key.fake::<String>();
-            assert!(engine.put(k.clone(), value.fake::<String>()).is_ok());
-            k
-        })
-        .collect();
+    let mut insert_keys = Vec::with_capacity(100000);
 
-    let mut rng = thread_rng();
+    runtime.block_on(async {
+        for _ in 0..100000 {
+            let k = key.fake::<String>();
+            assert!(engine.put(k.clone(), value.fake::<String>()).await.is_ok());
+            insert_keys.push(k)
+        }
+    });
 
     c.bench_function("7-get-3-put", |b| {
-        b.iter_batched(
+        b.to_async(&runtime).iter_batched(
             || {
                 (
                     insert_keys[random::<usize>() % 100000].clone(),
                     key.fake::<String>(),
                     value.fake::<String>(),
-                    rng.gen_range(0u8..10),
                 )
             },
-            |(rk, wk, v, rw)| {
-                if rw < 3 {
-                    assert!(engine.put(wk, v).is_ok());
+            |(rk, wk, v)| async {
+                if rand::random::<f32>() < 0.3 {
+                    assert!(engine.put(wk, v).await.is_ok());
                 } else {
-                    assert!(engine.get(rk.as_bytes()).is_ok());
+                    assert!(engine.get(rk).await.is_ok());
                 }
             },
             criterion::BatchSize::SmallInput,
@@ -105,8 +118,13 @@ fn bench_7_get_3_put(c: &mut Criterion) {
 }
 
 fn bench_multithread(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
     let temp_dir = tempfile::tempdir().unwrap();
-    let engine = open(temp_dir.path().to_path_buf());
+    let engine = runtime.block_on(async { open(temp_dir.path().to_path_buf()).await });
 
     let key = Sentence(32..64);
     let value = Sentence((3 << 10)..(5 << 10));
@@ -115,7 +133,8 @@ fn bench_multithread(c: &mut Criterion) {
         .into_par_iter()
         .map(|_| {
             let k = key.fake::<String>();
-            assert!(engine.put(k.clone(), value.fake::<String>()).is_ok());
+            assert!(runtime
+                .block_on(async { engine.put(k.clone(), value.fake::<String>()).await.is_ok() }));
             k
         })
         .collect();
@@ -124,11 +143,13 @@ fn bench_multithread(c: &mut Criterion) {
         b.iter_custom(|_| {
             let start = Instant::now();
 
-            insert_keys
-                .par_iter()
-                .for_each(|k| assert!(black_box(engine.get(k.as_bytes()).is_ok())));
+            insert_keys.par_iter().for_each(|k| {
+                assert!(black_box(
+                    runtime.block_on(engine.get(k.as_bytes())).is_ok()
+                ))
+            });
 
-            start.elapsed()
+            start.elapsed().div(100000)
         })
     });
 
@@ -138,7 +159,9 @@ fn bench_multithread(c: &mut Criterion) {
 
             insert_keys.par_iter().take(2000).for_each(|k| {
                 assert!(black_box(
-                    engine.put(k.clone(), value.fake::<String>()).is_ok()
+                    runtime
+                        .block_on(engine.put(k.clone(), value.fake::<String>()))
+                        .is_ok()
                 ))
             });
 
@@ -152,9 +175,11 @@ fn bench_multithread(c: &mut Criterion) {
 
             insert_keys.par_iter().take(10000).for_each(|k| {
                 if random::<f32>() < 0.3 {
-                    assert!(engine.put(k.clone(), value.fake::<String>()).is_ok())
+                    assert!(runtime
+                        .block_on(engine.put(k.clone(), value.fake::<String>()))
+                        .is_ok())
                 } else {
-                    assert!(engine.get(k.as_bytes()).is_ok())
+                    assert!(runtime.block_on(engine.get(k.as_bytes())).is_ok())
                 }
             });
 
@@ -163,5 +188,5 @@ fn bench_multithread(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench, bench_7_get_3_put, bench_multithread,);
+criterion_group!(benches, bench, bench_7_get_3_put, bench_multithread);
 criterion_main!(benches);
