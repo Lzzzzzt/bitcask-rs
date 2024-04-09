@@ -1,9 +1,9 @@
 use std::{path::PathBuf, sync::Arc, thread, time::Instant};
 
-use bitcask_rs::{config::Config, db::DBEngine};
+use bitcask_rs::{config::Config, db::Engine};
 use fake::{faker::lorem::en::Sentence, Fake};
 
-fn open(temp_dir: PathBuf) -> DBEngine {
+fn open(temp_dir: PathBuf) -> Engine {
     let config = Config {
         file_size_threshold: 1 << 30,
         db_path: temp_dir,
@@ -13,7 +13,7 @@ fn open(temp_dir: PathBuf) -> DBEngine {
         index_num: 32,
     };
 
-    DBEngine::open(config).unwrap()
+    Engine::open(config).unwrap()
 }
 
 fn main() {

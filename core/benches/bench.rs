@@ -1,12 +1,12 @@
 use std::{ops::Div, path::PathBuf, time::Instant};
 
-use bitcask_rs::{config::Config, db::DBEngine};
+use bitcask_rs::{config::Config, db::Engine};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use fake::{faker::lorem::en::Sentence, Fake};
 use rand::{random, thread_rng, Rng};
 use rayon::prelude::*;
 
-fn open(temp_dir: PathBuf) -> DBEngine {
+fn open(temp_dir: PathBuf) -> Engine {
     let config = Config {
         file_size_threshold: 1 << 30,
         db_path: temp_dir,
@@ -16,7 +16,7 @@ fn open(temp_dir: PathBuf) -> DBEngine {
         index_num: 32,
     };
 
-    DBEngine::open(config).unwrap()
+    Engine::open(config).unwrap()
 }
 
 fn bench(c: &mut Criterion) {

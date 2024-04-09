@@ -6,13 +6,13 @@ use parking_lot::RwLock;
 
 use crate::data::data_file::{data_file_name, DataFile};
 use crate::data::log_record::{Record, RecordPosition};
-use crate::db::DBEngine;
+use crate::db::Engine;
 use crate::errors::{BCResult, Errors};
 use crate::utils::merge_path;
 use crate::DB_DATA_FILE_SUFFIX;
 use crate::DB_MERGE_FIN_FILE;
 
-impl DBEngine {
+impl Engine {
     pub fn merge(&self) -> BCResult<()> {
         // TODO: Check Engine is not empty
 
