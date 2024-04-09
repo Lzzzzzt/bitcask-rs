@@ -5,18 +5,18 @@ use parking_lot::RwLock;
 
 use crate::config::WriteBatchConfig;
 use crate::data::log_record::{Record, RecordDataType};
-use crate::db::DBEngine;
+use crate::db::Engine;
 use crate::errors::{BCResult, Errors};
 use crate::utils::{check_key_valid, Key, Value};
 
 /// ensure atomic write
 pub struct WriteBatch<'a> {
     pub pending: RwLock<HashMap<Key, Record>>,
-    pub engine: &'a DBEngine,
+    pub engine: &'a Engine,
     pub config: WriteBatchConfig,
 }
 
-impl DBEngine {
+impl Engine {
     pub fn new_write_batch(&self, config: WriteBatchConfig) -> BCResult<WriteBatch> {
         Ok(WriteBatch {
             pending: Default::default(),
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn batch_put() -> Result<(), Box<dyn Error>> {
         let temp_dir = tempfile::tempdir()?;
-        let engine = DBEngine::open(Config::test_config(temp_dir.path().to_path_buf()))?;
+        let engine = Engine::open(Config::test_config(temp_dir.path().to_path_buf()))?;
 
         let mut batch = engine.new_write_batch(WriteBatchConfig::default())?;
 
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn batch_del() -> Result<(), Box<dyn Error>> {
         let temp_dir = tempfile::tempdir()?;
-        let engine = DBEngine::open(Config::test_config(temp_dir.path().to_path_buf()))?;
+        let engine = Engine::open(Config::test_config(temp_dir.path().to_path_buf()))?;
 
         let mut batch = engine.new_write_batch(WriteBatchConfig::default())?;
 

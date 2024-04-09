@@ -17,7 +17,7 @@ use crate::index::{create_indexer, Indexer};
 use crate::utils::{check_key_valid, key_hash, merge_path};
 use crate::{DB_DATA_FILE_SUFFIX, DB_FILE_LOCK, DB_MERGE_FIN_FILE};
 
-pub struct DBEngine {
+pub struct Engine {
     /// Only used for update index
     fids: Vec<u32>,
     pub(crate) config: Config,
@@ -32,7 +32,7 @@ pub struct DBEngine {
     pub(crate) bytes_written: AtomicUsize,
 }
 
-impl DBEngine {
+impl Engine {
     /// Open the Bitcask DBEngine
     pub fn open(config: Config) -> BCResult<Self> {
         // check the config
@@ -428,7 +428,7 @@ impl DBEngine {
     }
 }
 
-impl Drop for DBEngine {
+impl Drop for Engine {
     fn drop(&mut self) {
         if self.close().ok().is_some() {}
     }
