@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{DB_DATA_FILE_SUFFIX, DB_FILE_LOCK};
+use crate::consts::*;
 
 #[derive(Debug, Error)]
 pub enum Errors {

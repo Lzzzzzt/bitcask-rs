@@ -84,7 +84,7 @@ impl<'a> WriteBatch<'a> {
 
         for (k, mut v) in pending {
             v.key = k;
-            let record = v.enable_transaction(seq);
+            let record = v.enable_batch(seq);
 
             let pos = self.engine.append_log_record(&record)?;
 
@@ -105,11 +105,17 @@ impl<'a> WriteBatch<'a> {
             .try_for_each(|(record, pos)| {
                 let real_index = self.engine.get_index(&record.key);
 
-                match record.record_type {
-                    RecordDataType::Deleted => real_index.del(&record.key),
-                    RecordDataType::Normal => real_index.put(record.key, pos),
+                let position = match record.record_type {
+                    RecordDataType::Deleted => Some(real_index.del(&record.key)?),
+                    RecordDataType::Normal => real_index.put(record.key, pos)?,
                     RecordDataType::Commited => unreachable!(),
+                };
+
+                if let Some(position) = position {
+                    self.engine.update_reclaimable(position.size);
                 }
+
+                Ok(())
             })?;
 
         Ok(())

@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["core", "cli"]
+
+[profile.release]
+lto = true

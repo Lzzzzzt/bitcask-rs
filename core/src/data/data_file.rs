@@ -1,18 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use crate::errors::BCResult;
-use crate::file::io::{create_io_manager, IO};
+use crate::file::io::{create_io_manager, IOType, IO};
 
-use crate::file::system_file::SystemFile;
-// use crate::file::system_file::SystemFile;
-use crate::{DB_DATA_FILE_SUFFIX, DB_HINT_FILE, DB_MERGE_FIN_FILE};
+use crate::consts::*;
 
 use super::log_record::{ReadRecord, Record};
 
 pub struct DataFile {
     pub(crate) id: u32,
     pub(crate) write_offset: u32,
-    io: SystemFile,
+    io: Box<dyn IO>,
 }
 
 impl DataFile {
@@ -23,7 +21,17 @@ impl DataFile {
         Ok(Self {
             id,
             write_offset: 0,
-            io: create_io_manager(filename)?,
+            io: create_io_manager(filename, IOType::Syscall)?,
+        })
+    }
+
+    pub fn new_mapped<P: AsRef<Path>>(directory: P, id: u32) -> BCResult<Self> {
+        let filename = data_file_name(directory, id);
+
+        Ok(Self {
+            id,
+            write_offset: 0,
+            io: create_io_manager(filename, IOType::Mmap)?,
         })
     }
 
@@ -33,7 +41,7 @@ impl DataFile {
         Ok(Self {
             id: 0,
             write_offset: 0,
-            io: create_io_manager(filename)?,
+            io: create_io_manager(filename, IOType::Syscall)?,
         })
     }
 
@@ -43,7 +51,7 @@ impl DataFile {
         Ok(Self {
             id: 0,
             write_offset: 0,
-            io: create_io_manager(filename)?,
+            io: create_io_manager(filename, crate::file::io::IOType::Syscall)?,
         })
     }
 
@@ -56,7 +64,7 @@ impl DataFile {
 
     /// read `ReadLogRecord` from data file by offset
     pub fn read_record(&self, offset: u32) -> BCResult<ReadRecord> {
-        ReadRecord::decode(&self.io, offset)
+        ReadRecord::decode(self.io.as_ref(), offset)
     }
 
     pub fn read_record_with_size(&self, offset: u32, size: u32) -> BCResult<ReadRecord> {
@@ -67,6 +75,19 @@ impl DataFile {
 
     pub fn sync(&self) -> BCResult<()> {
         self.io.sync()
+    }
+
+    pub fn reset_io_type<P: AsRef<Path>>(&mut self, directory: P) -> BCResult<()> {
+        self.io = create_io_manager(data_file_name(directory, self.id), IOType::Syscall)?;
+
+        Ok(())
+    }
+
+    pub fn padding(&mut self, max: u32) -> BCResult<()> {
+        let len = max - self.write_offset;
+        let buf = vec![0; len as usize];
+        self.io.write(&buf, self.write_offset)?;
+        Ok(())
     }
 }
 
@@ -85,6 +106,7 @@ mod tests {
     #[test]
     fn new() -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
+
         let data_file1 = DataFile::new(temp_dir.path(), 0)?;
         assert_eq!(data_file1.id, 0);
 

@@ -14,7 +14,6 @@ pub struct SystemFile {
 }
 
 impl SystemFile {
-    #[allow(unused)]
     pub fn new(filename: impl AsRef<Path>) -> BCResult<Self> {
         OpenOptions::new()
             .create(true)
@@ -31,9 +30,10 @@ impl IO for SystemFile {
         Ok(self.fd.write(buf).map_err(Errors::WriteDataFileFaild)? as u32)
     }
 
-    fn read(&self, buf: &mut [u8], offset: u32) -> BCResult<usize> {
+    fn read(&self, buf: &mut [u8], offset: u32) -> BCResult<u32> {
         self.fd
             .read_at(buf, offset as u64)
+            .map(|bytes| bytes as u32)
             .map_err(Errors::ReadDataFileFaild)
     }
 
@@ -57,6 +57,24 @@ mod tests {
     use crate::file::io::IO;
 
     use super::{BCResult, SystemFile};
+
+    #[test]
+    fn new() -> BCResult<()> {
+        let dir = tempfile::tempdir().unwrap();
+
+        // open unexist file
+        let f = SystemFile::new(format!("{}/111.txt", dir.path().display()));
+
+        assert!(f.is_ok());
+
+        // open exist file
+
+        let f = SystemFile::new(format!("{}/111.txt", dir.path().display()));
+
+        assert!(f.is_ok());
+
+        Ok(())
+    }
 
     #[test]
     fn write() -> BCResult<()> {

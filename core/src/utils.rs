@@ -31,12 +31,13 @@ pub mod tests {
 
     pub fn open(temp_dir: PathBuf) -> BCResult<Engine> {
         let config = Config {
-            file_size_threshold: 64 * 1024 * 1024,
+            file_size_threshold: 64 * 1000 * 1000,
             db_path: temp_dir,
             sync_write: false,
             bytes_per_sync: 0,
             index_type: crate::config::IndexType::BTree,
             index_num: 4,
+            start_with_mmap: false,
         };
 
         Engine::open(config)

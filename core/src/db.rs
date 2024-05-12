@@ -1,35 +1,48 @@
 use std::fs::File;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use std::{fs, path::Path};
 
+use bytesize::ByteSize;
 use fs4::FileExt;
 use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
 
 use crate::config::Config;
+use crate::consts::*;
 use crate::data::data_file::DataFile;
-use crate::data::log_record::{
-    ReadRecord, Record, RecordBatchState, RecordDataType, RecordExpireState, RecordPosition,
-};
-use crate::errors::{BCResult, Errors};
-use crate::index::{create_indexer, Indexer};
-use crate::utils::{check_key_valid, key_hash, merge_path};
-use crate::{DB_DATA_FILE_SUFFIX, DB_FILE_LOCK, DB_MERGE_FIN_FILE};
+use crate::data::log_record::*;
+use crate::errors::*;
+use crate::index::*;
+use crate::utils::*;
+
+#[derive(Clone, Copy, Debug)]
+pub struct EngineState {
+    pub data_file_num: usize,
+    pub key_num: usize,
+    pub reclaimable_size: ByteSize,
+    pub disk_size: ByteSize,
+}
 
 pub struct Engine {
     /// Only used for update index
     fids: Vec<u32>,
     pub(crate) config: Config,
+
     pub(crate) active: RwLock<DataFile>,
     pub(crate) read_active: RwLock<DataFile>,
-    pub(crate) index: Vec<Box<dyn Indexer>>,
     pub(crate) archive: RwLock<HashMap<u32, DataFile>>,
+
+    pub(crate) index: Vec<Box<dyn Indexer>>,
+
     pub(crate) batch_lock: Mutex<()>,
     pub(crate) batch_seq: AtomicU64,
+
     pub(crate) merge_lock: Mutex<()>,
+
     pub(crate) lock_file: File,
     pub(crate) bytes_written: AtomicUsize,
+    pub(crate) reclaimable: AtomicUsize,
 }
 
 impl Engine {
@@ -65,13 +78,23 @@ impl Engine {
 
         Self::load_merged_file(&config.db_path)?;
 
-        let mut data_files = load_data_file(&config.db_path)?;
+        let mut data_fids = load_datafile_id(&config.db_path)?;
 
-        let active_file = data_files
+        let active_file = data_fids
             .pop()
-            .unwrap_or(DataFile::new(&config.db_path, 0)?);
+            .map(|id| DataFile::new(&config.db_path, id))
+            .unwrap_or(DataFile::new(&config.db_path, 0))?;
 
-        let data_fids: Vec<u32> = data_files.iter().map(|f| f.id).collect();
+        let data_files: Vec<DataFile> = data_fids
+            .iter()
+            .map(|id| {
+                if config.start_with_mmap {
+                    DataFile::new_mapped(&config.db_path, *id)
+                } else {
+                    DataFile::new(&config.db_path, *id)
+                }
+            })
+            .try_collect()?;
 
         let file_with_id = data_fids.iter().copied().zip(data_files).collect();
 
@@ -91,12 +114,17 @@ impl Engine {
             merge_lock: Mutex::new(()),
             lock_file,
             bytes_written: AtomicUsize::new(0),
+            reclaimable: AtomicUsize::new(0),
         };
 
         // put the active file id into file ids
         engine.fids.push(active_file_id);
 
         engine.load_index()?;
+
+        if engine.config.start_with_mmap {
+            engine.reset_io_type()?;
+        }
 
         Ok(engine)
     }
@@ -130,9 +158,14 @@ impl Engine {
         let record_positoin = self.append_log_record(&record)?;
 
         // update in-memory index
-        self.get_index(&record.key)
+        let pre_pos = self
+            .get_index(&record.key)
             .put(record.key, record_positoin)
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
+
+        if let Some(pos) = pre_pos {
+            self.update_reclaimable(pos.size);
+        }
         Ok(())
     }
 
@@ -149,9 +182,14 @@ impl Engine {
         let record_positoin = self.append_log_record(&record)?;
 
         // update in-memory index
-        self.get_index(&record.key)
+        let pre_pos = self
+            .get_index(&record.key)
             .put(record.key, record_positoin)
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
+
+        if let Some(pos) = pre_pos {
+            self.update_reclaimable(pos.size);
+        }
         Ok(())
     }
 
@@ -172,13 +210,9 @@ impl Engine {
         let record = self.get_record_with_position(record_position)?;
 
         // check the record is expired or not
-        if let RecordExpireState::Enable(ts) = record.expire {
-            let now = SystemTime::now();
-            let expire = UNIX_EPOCH + Duration::from_micros(ts.get() as u64);
-            if expire <= now {
-                self.get_index(key).del(key)?;
-                return Err(Errors::KeyNotFound);
-            }
+        if record.is_expire() {
+            self.get_index(key).del(key)?;
+            return Err(Errors::KeyNotFound);
         }
 
         // if this record is deleted, return `KeyNotFound`
@@ -207,15 +241,32 @@ impl Engine {
 
         self.append_log_record(&record)?;
 
-        index
+        let pre_pos = index
             .del(key)
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
+
+        self.update_reclaimable(pre_pos.size);
 
         Ok(())
     }
 
     pub fn sync(&self) -> BCResult<()> {
         self.active.read().sync()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.index.iter().all(|i| i.is_empty())
+    }
+
+    pub fn state(&self) -> EngineState {
+        let key_num = self.index.iter().map(|i| i.len()).sum();
+
+        EngineState {
+            data_file_num: self.archive.read().len() + 1,
+            key_num,
+            reclaimable_size: ByteSize::b(self.reclaimable.load(Ordering::SeqCst) as u64),
+            disk_size: ByteSize::b(self.bytes_written.load(Ordering::SeqCst) as u64),
+        }
     }
 
     pub(crate) fn append_log_record(&self, record: &Record) -> BCResult<RecordPosition> {
@@ -229,6 +280,7 @@ impl Engine {
         // check current active file size is small then config.data_file_size
         if active.write_offset + record_len > self.config.file_size_threshold {
             // sync active file
+            active.padding(self.config.file_size_threshold)?;
             active.sync()?;
 
             let pre_fid = active.id;
@@ -355,7 +407,7 @@ impl Engine {
                     RecordDataType::Commited => {
                         batched
                             .remove(&state.get())
-                            .unwrap()
+                            .expect("[Batch]: Should not be None")
                             .into_iter()
                             .try_for_each(|record| self.update_index(record, record_position))?;
                         if current_seq_no < state.get() {
@@ -385,13 +437,24 @@ impl Engine {
         record: ReadRecord,
         record_position: RecordPosition,
     ) -> BCResult<()> {
-        let real_index = self.get_index(record.key());
+        let index = self.get_index(record.key());
 
-        match record.record_type {
-            RecordDataType::Deleted => real_index.del(record.key()),
-            RecordDataType::Normal => real_index.put(record.key().into(), record_position),
+        let position = match record.record_type {
+            RecordDataType::Deleted => Some(index.del(record.key())?),
+            RecordDataType::Normal => index.put(record.key().into(), record_position)?,
             RecordDataType::Commited => unreachable!(),
+        };
+
+        if let Some(position) = position {
+            self.update_reclaimable(position.size);
         }
+
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn update_reclaimable(&self, size: u32) {
+        self.reclaimable.fetch_add(size as usize, Ordering::SeqCst);
     }
 
     fn get_record(&self, id: u32, offset: u32) -> BCResult<ReadRecord> {
@@ -426,6 +489,16 @@ impl Engine {
                 .as_ref()
         }
     }
+
+    pub(crate) fn reset_io_type(&self) -> BCResult<()> {
+        let mut archive = self.archive.write();
+
+        archive
+            .iter_mut()
+            .try_for_each(|(_, f)| f.reset_io_type(&self.config.db_path))?;
+
+        Ok(())
+    }
 }
 
 impl Drop for Engine {
@@ -434,7 +507,7 @@ impl Drop for Engine {
     }
 }
 
-fn load_data_file(dir: impl AsRef<Path>) -> BCResult<Vec<DataFile>> {
+fn load_datafile_id(dir: impl AsRef<Path>) -> BCResult<Vec<u32>> {
     let directory = fs::read_dir(&dir).map_err(|e| {
         Errors::OpenDBDirFailed(
             dir.as_ref().to_string_lossy().to_string().into_boxed_str(),
@@ -458,10 +531,10 @@ fn load_data_file(dir: impl AsRef<Path>) -> BCResult<Vec<DataFile>> {
             .parse()
             .map_err(|_| Errors::DataFileMayBeDamaged(filename.into_boxed_str()))?;
 
-        data_files.push(DataFile::new(&dir, id)?);
+        data_files.push(id);
     }
 
-    data_files.sort_unstable_by_key(|f| f.id);
+    data_files.sort_unstable();
 
     Ok(data_files)
 }
@@ -529,6 +602,8 @@ mod tests {
         // reboot, then put
         engine.close()?;
 
+        assert!(File::open(format!("{}/000000000.bcdata", temp_dir.path().display())).is_ok());
+
         let engine = open(temp_dir.path().to_path_buf())?;
 
         let key: String = word.fake();
@@ -536,10 +611,11 @@ mod tests {
         let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.get(key.as_bytes());
-        let res = dbg!(res);
         assert!(res.is_ok());
         let res_value = res.unwrap();
         assert_eq!(value.as_bytes(), res_value);
+
+        temp_dir.close().unwrap();
 
         Ok(())
     }
@@ -750,6 +826,46 @@ mod tests {
 
         let engine2 = open(temp_dir.path().to_path_buf());
         assert!(engine2.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn state() -> BCResult<()> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let engine = open(temp_dir.path().to_path_buf())?;
+        let word = Word();
+        let sentence = Sentence(64..65);
+
+        let state = engine.state();
+
+        assert_eq!(state.data_file_num, 1);
+        assert_eq!(state.disk_size.as_u64(), 0);
+        assert_eq!(state.key_num, 0);
+        assert_eq!(state.reclaimable_size.as_u64(), 0);
+
+        // put one normal record
+        let key: String = word.fake();
+        let value = sentence.fake::<String>();
+        let res = engine.put(key.clone(), value.clone());
+        assert!(res.is_ok());
+
+        let state = engine.state();
+
+        assert_eq!(state.data_file_num, 1);
+        assert!(state.disk_size.as_u64() > 0);
+        assert_eq!(state.key_num, 1);
+        assert_eq!(state.reclaimable_size.as_u64(), 0);
+
+        // del
+        let res = engine.del(key.as_bytes());
+        assert!(res.is_ok());
+        let state = engine.state();
+
+        assert_eq!(state.data_file_num, 1);
+        assert!(state.disk_size.as_u64() > 0);
+        assert_eq!(state.key_num, 0);
+        assert!(state.reclaimable_size.as_u64() > 0);
 
         Ok(())
     }

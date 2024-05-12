@@ -17,7 +17,7 @@ pub trait Indexer: Sync + Send {
     /// Create a key-position set in in-memory data
     /// ### Return Value
     /// `Ok(())` means this function call is succuss, otherwise is failed.
-    fn put(&self, key: Key, positoin: RecordPosition) -> BCResult<()>;
+    fn put(&self, key: Key, positoin: RecordPosition) -> BCResult<Option<RecordPosition>>;
     /// ## Query `key`
     /// Query the in-memory data with given key
     /// ### Return Value
@@ -29,9 +29,15 @@ pub trait Indexer: Sync + Send {
     /// ### Return Value
     /// + `Ok(())` means the key-position set have been removed succussfully, and the position will be return
     /// + `Err()` means the given key is not found, so that this function call is failed
-    fn del(&self, key: &[u8]) -> BCResult<()>;
+    fn del(&self, key: &[u8]) -> BCResult<RecordPosition>;
 
-    fn exist(&self, key: &[u8]) -> bool;
+    fn exist(&self, key: &[u8]) -> bool {
+        self.get(key).is_some()
+    }
+
+    fn is_empty(&self) -> bool;
+
+    fn len(&self) -> usize;
 }
 
 pub fn create_indexer(index_type: &IndexType, index_num: u8) -> Vec<Box<dyn Indexer>> {

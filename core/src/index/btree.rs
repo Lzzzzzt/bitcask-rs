@@ -11,10 +11,9 @@ pub struct BTree {
 }
 
 impl Indexer for BTree {
-    fn put(&self, key: Key, positoin: RecordPosition) -> BCResult<()> {
+    fn put(&self, key: Key, positoin: RecordPosition) -> BCResult<Option<RecordPosition>> {
         let mut map = self.inner.write();
-        map.insert(key, positoin);
-        Ok(())
+        Ok(map.insert(key, positoin))
     }
 
     fn get(&self, key: &[u8]) -> Option<RecordPosition> {
@@ -22,14 +21,21 @@ impl Indexer for BTree {
         map.get(key).copied()
     }
 
-    fn del(&self, key: &[u8]) -> BCResult<()> {
+    fn del(&self, key: &[u8]) -> BCResult<RecordPosition> {
         let mut map = self.inner.write();
-        map.remove(key).ok_or(Errors::KeyNotFound)?;
-        Ok(())
+        map.remove(key).ok_or(Errors::KeyNotFound)
     }
 
     fn exist(&self, key: &[u8]) -> bool {
         self.inner.read().contains_key(key)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner.read().is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.inner.read().len()
     }
 }
 

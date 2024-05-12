@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc, thread, time::Instant};
 
-use bitcask_rs::{config::Config, db::Engine};
+use bitcask_rs_core::{config::Config, db::Engine};
 use fake::{faker::lorem::en::Sentence, Fake};
 
 fn open(temp_dir: PathBuf) -> Engine {
@@ -9,8 +9,9 @@ fn open(temp_dir: PathBuf) -> Engine {
         db_path: temp_dir,
         sync_write: false,
         bytes_per_sync: 0,
-        index_type: bitcask_rs::config::IndexType::BTree,
+        index_type: bitcask_rs_core::config::IndexType::BTree,
         index_num: 32,
+        start_with_mmap: false
     };
 
     Engine::open(config).unwrap()

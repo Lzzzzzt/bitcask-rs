@@ -74,7 +74,7 @@ pub enum RecordDataType {
     Deleted,
     // the nomarl data
     Normal,
-    // mark commited transacton
+    // mark commited batch
     Commited,
 }
 
@@ -188,12 +188,12 @@ impl Record {
         Self::normal("MF".into(), unmerged.to_be_bytes().into())
     }
 
-    pub fn enable_transaction(mut self, seq_num: u64) -> Self {
+    pub fn enable_batch(mut self, seq_num: u64) -> Self {
         self.batch_state = seq_num.into();
         self
     }
 
-    pub fn disable_transaction(&mut self) {
+    pub fn disable_batch(&mut self) {
         self.batch_state = RecordBatchState::Disable
     }
 
@@ -277,6 +277,17 @@ impl Record {
 
         fixed_length
     }
+
+    pub fn is_expire(&self) -> bool {
+        if let RecordExpireState::Enable(ts) = self.expire {
+            let now = SystemTime::now();
+            let expire = UNIX_EPOCH + Duration::from_micros(ts.get() as u64);
+
+            expire <= now
+        } else {
+            false
+        }
+    }
 }
 
 #[inline]
@@ -298,7 +309,7 @@ pub struct ReadRecord {
 
 #[allow(unused)]
 impl ReadRecord {
-    pub fn decode<T: IO>(io: &T, offset: u32) -> BCResult<Self> {
+    pub fn decode(io: &dyn IO, offset: u32) -> BCResult<Self> {
         let mut size_bytes: [u8; 8] = [0; 8];
         io.read(&mut size_bytes, offset)?;
         let size = u64::from_be_bytes(size_bytes);
@@ -390,6 +401,17 @@ impl ReadRecord {
             expire: self.expire,
             key: self.data[key_start..key_end].to_vec(),
             value: self.data[value_start..value_end].to_vec(),
+        }
+    }
+
+    pub fn is_expire(&self) -> bool {
+        if let RecordExpireState::Enable(ts) = self.expire {
+            let now = SystemTime::now();
+            let expire = UNIX_EPOCH + Duration::from_micros(ts.get() as u64);
+
+            expire <= now
+        } else {
+            false
         }
     }
 }

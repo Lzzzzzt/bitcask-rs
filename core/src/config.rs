@@ -17,6 +17,8 @@ pub struct Config {
     pub index_type: IndexType,
 
     pub index_num: u8,
+
+    pub start_with_mmap: bool,
 }
 
 impl Config {
@@ -29,6 +31,20 @@ impl Config {
             return Err(Errors::DataFileSizeTooSmall(self.file_size_threshold));
         }
         Ok(())
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            db_path: "/tmp/bitcask_rs".into(),
+            file_size_threshold: 256 << 10,
+            sync_write: false,
+            bytes_per_sync: 0,
+            index_type: IndexType::SkipList,
+            index_num: 8,
+            start_with_mmap: false,
+        }
     }
 }
 
@@ -67,6 +83,7 @@ mod tests {
                 bytes_per_sync: 0,
                 index_type: crate::config::IndexType::BTree,
                 index_num: 4,
+                start_with_mmap: false,
             }
         }
     }
