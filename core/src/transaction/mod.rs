@@ -312,6 +312,15 @@ mod tests {
             Ok(())
         })?;
 
+        // now there is no active transacion. will auto run the cleanup
+
+        // Time
+        //  3                      rollback
+        //  2  a2              e2  committed
+        //  1                      committed
+        //  0      b1  c1  d1      committed
+        //     a   b   c   d   e   Keys
+
         // the index of <a, a1>, <e, e1> should be deleted
         let e = engine.get_engine();
         assert!(e.get(Key::new(b"a".to_vec(), 0).encode()).is_err());

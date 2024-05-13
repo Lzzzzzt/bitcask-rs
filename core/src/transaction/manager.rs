@@ -23,7 +23,7 @@ pub(crate) struct TxnManager {
 }
 
 impl TxnManager {
-    pub(crate) fn from_file_or_init(config: Config, singal: Sender<()>) -> BCResult<Self> {
+    pub(crate) fn from_file_or_init(config: Config, signal: Sender<()>) -> BCResult<Self> {
         let path = config.db_path.join(TXN_INFO_FILE);
 
         let manager = match std::fs::read(&path) {
@@ -36,7 +36,7 @@ impl TxnManager {
                     version: AtomicU64::from(verison),
                     active_txn: Mutex::new(active),
                     pending_clean: Default::default(),
-                    cleanup_signal: singal,
+                    cleanup_signal: signal,
                 }
             }
             Err(e) => {
@@ -50,7 +50,7 @@ impl TxnManager {
                     version: Default::default(),
                     active_txn: Default::default(),
                     pending_clean: Default::default(),
-                    cleanup_signal: singal,
+                    cleanup_signal: signal,
                 }
             }
         };
