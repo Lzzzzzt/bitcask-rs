@@ -5,6 +5,7 @@ pub mod skip_list;
 use crate::config::IndexType;
 use crate::data::log_record::RecordPosition;
 use crate::errors::BCResult;
+use crate::transaction::{Transaction, TxnSearchType};
 use crate::utils::Key;
 
 use self::btree::BTree;
@@ -31,13 +32,18 @@ pub trait Indexer: Sync + Send {
     /// + `Err()` means the given key is not found, so that this function call is failed
     fn del(&self, key: &[u8]) -> BCResult<RecordPosition>;
 
-    fn exist(&self, key: &[u8]) -> bool {
-        self.get(key).is_some()
-    }
+    fn exist(&self, key: &[u8]) -> bool;
 
     fn is_empty(&self) -> bool;
 
     fn len(&self) -> usize;
+
+    fn transaction_prefix_search(
+        &self,
+        prefix: &[u8],
+        search_type: TxnSearchType,
+        transaction: &Transaction,
+    ) -> BCResult<(RecordPosition, u64)>;
 }
 
 pub fn create_indexer(index_type: &IndexType, index_num: u8) -> Vec<Box<dyn Indexer>> {

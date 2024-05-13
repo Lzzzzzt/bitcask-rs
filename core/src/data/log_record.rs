@@ -307,7 +307,6 @@ pub struct ReadRecord {
     pub(crate) expire: RecordExpireState,
 }
 
-#[allow(unused)]
 impl ReadRecord {
     pub fn decode(io: &dyn IO, offset: u32) -> BCResult<Self> {
         let mut size_bytes: [u8; 8] = [0; 8];
@@ -404,6 +403,7 @@ impl ReadRecord {
         }
     }
 
+    #[inline]
     pub fn is_expire(&self) -> bool {
         if let RecordExpireState::Enable(ts) = self.expire {
             let now = SystemTime::now();

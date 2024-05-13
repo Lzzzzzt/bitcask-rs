@@ -14,6 +14,7 @@ use crate::data::data_file::DataFile;
 use crate::data::log_record::*;
 use crate::errors::*;
 use crate::index::*;
+use crate::transaction::{Transaction, TxnSearchType};
 use crate::utils::*;
 
 #[derive(Clone, Copy, Debug)]
@@ -27,6 +28,7 @@ pub struct EngineState {
 pub struct Engine {
     /// Only used for update index
     fids: Vec<u32>,
+
     pub(crate) config: Config,
 
     pub(crate) active: RwLock<DataFile>,
@@ -108,11 +110,11 @@ impl Engine {
             read_active: RwLock::new(read_active_file),
             archive: RwLock::new(file_with_id),
             fids: data_fids,
-            config,
             batch_lock: Mutex::new(()),
             batch_seq: AtomicU64::new(1),
             merge_lock: Mutex::new(()),
             lock_file,
+            config: config.clone(),
             bytes_written: AtomicUsize::new(0),
             reclaimable: AtomicUsize::new(0),
         };
@@ -122,7 +124,7 @@ impl Engine {
 
         engine.load_index()?;
 
-        if engine.config.start_with_mmap {
+        if config.start_with_mmap {
             engine.reset_io_type()?;
         }
 
@@ -226,23 +228,23 @@ impl Engine {
     /// Delete the key-value set
     /// ## Parameter
     /// + `key`: Bytes, should not be empty
-    pub fn del<T: AsRef<[u8]>>(&self, key: T) -> BCResult<()> {
-        let key = key.as_ref();
+    pub fn del<T: Into<Value>>(&self, key: T) -> BCResult<()> {
+        let key: Vec<_> = key.into();
 
-        check_key_valid(key)?;
+        check_key_valid(&key)?;
 
-        let index = self.get_index(key);
+        let index = self.get_index(&key);
 
-        if !index.exist(key) {
+        if !index.exist(&key) {
             return Ok(());
         }
 
-        let record = Record::deleted(key.to_vec());
+        let record = Record::deleted(key);
 
         self.append_log_record(&record)?;
 
         let pre_pos = index
-            .del(key)
+            .del(&record.key)
             .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
 
         self.update_reclaimable(pre_pos.size);
@@ -269,8 +271,35 @@ impl Engine {
         }
     }
 
+    pub(crate) fn txn_write(&self, record: Record) -> BCResult<()> {
+        // append the record in the data file
+        let record_positoin = self.append_log_record(&record)?;
+
+        // update in-memory index
+        self.get_index(&record.key)
+            .put(record.key, record_positoin)
+            .map_err(|_| Errors::MemoryIndexUpdateFailed)?;
+
+        Ok(())
+    }
+
+    pub(crate) fn txn_search<T: AsRef<[u8]>>(
+        &self,
+        prefix: T,
+        search_type: TxnSearchType,
+        txn: &Transaction,
+    ) -> BCResult<(RecordPosition, u64)> {
+        let prefix = prefix.as_ref();
+
+        let index = self.get_index(prefix);
+
+        index.transaction_prefix_search(prefix, search_type, txn)
+    }
+
     pub(crate) fn append_log_record(&self, record: &Record) -> BCResult<RecordPosition> {
-        let db_path = &self.config.db_path;
+        let config = &self.config;
+
+        let db_path = &config.db_path;
 
         let record_len = record.calculate_encoded_length() as u32;
 
@@ -278,9 +307,9 @@ impl Engine {
         let mut active = self.active.write();
 
         // check current active file size is small then config.data_file_size
-        if active.write_offset + record_len > self.config.file_size_threshold {
+        if active.write_offset + record_len > config.file_size_threshold {
             // sync active file
-            active.padding(self.config.file_size_threshold)?;
+            active.padding(config.file_size_threshold)?;
             active.sync()?;
 
             let pre_fid = active.id;
@@ -300,9 +329,9 @@ impl Engine {
         self.bytes_written
             .fetch_add(record_len as usize, Ordering::SeqCst);
 
-        if self.config.sync_write
-            && self.config.bytes_per_sync > 0
-            && self.bytes_written.load(Ordering::SeqCst) / self.config.bytes_per_sync >= 1
+        if config.sync_write
+            && config.bytes_per_sync > 0
+            && self.bytes_written.load(Ordering::SeqCst) / config.bytes_per_sync >= 1
         {
             active.sync()?;
         }
@@ -468,7 +497,10 @@ impl Engine {
         }
     }
 
-    fn get_record_with_position(&self, position: RecordPosition) -> BCResult<ReadRecord> {
+    pub(crate) fn get_record_with_position(
+        &self,
+        position: RecordPosition,
+    ) -> BCResult<ReadRecord> {
         let active_file = self.active.read();
         let old_files = self.archive.read();
 
@@ -560,7 +592,7 @@ mod tests {
 
         // put one normal record
         let key: String = word.fake();
-        let value = sentence.fake::<String>();
+        let value: String = sentence.fake();
         let res = engine.put(key.clone(), value.clone());
         assert!(res.is_ok());
         let res = engine.get(key.as_bytes());

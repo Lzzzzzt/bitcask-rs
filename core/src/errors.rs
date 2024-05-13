@@ -1,3 +1,4 @@
+use bincode::ErrorKind;
 use thiserror::Error;
 
 use crate::consts::*;
@@ -65,6 +66,16 @@ pub enum Errors {
     // Expire
     #[error("Invalid Expire Time")]
     InvalidExpireTime,
+
+    // Transaction
+    #[error("Transaction Conflict")]
+    TxnConflict,
+    #[error("Failed to Sync Transaction Controllor State: {0}")]
+    TxnInfoWriteFailed(std::io::Error),
+    #[error("Failed to Create Transaction Controllor State: {0}")]
+    TxnInfoCreateFailed(std::io::Error),
+    #[error("Failed to Read Transaction Controllor State: {0}")]
+    TxnInfoReadFailed(Box<ErrorKind>),
 }
 
 pub type BCResult<T> = std::result::Result<T, Errors>;

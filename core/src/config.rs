@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::errors::{BCResult, Errors};
 
 /// the config for the db
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     // db directory path
     pub db_path: PathBuf,
@@ -48,7 +48,7 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum IndexType {
     BTree,
     SkipList,

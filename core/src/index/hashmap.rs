@@ -3,6 +3,7 @@ use parking_lot::RwLock;
 use crate::{
     data::log_record::RecordPosition,
     errors::{BCResult, Errors},
+    transaction::{Transaction, TxnSearchType},
     utils::Key,
 };
 
@@ -39,6 +40,32 @@ impl Indexer for HashMap {
 
     fn len(&self) -> usize {
         self.inner.read().len()
+    }
+
+    fn transaction_prefix_search(
+        &self,
+        prefix: &[u8],
+        search_type: TxnSearchType,
+        transaction: &Transaction,
+    ) -> BCResult<(RecordPosition, u64)> {
+        let map = self.inner.read();
+
+        for key in map.keys() {
+            if key.len() - prefix.len() == 8 && key.starts_with(prefix) {
+                let version = u64::from_be_bytes(*key.last_chunk::<8>().unwrap());
+
+                if !transaction.is_visible(version) {
+                    match search_type {
+                        TxnSearchType::Read => continue,
+                        TxnSearchType::Write => return Err(Errors::TxnConflict),
+                    }
+                }
+
+                return Ok((map[key], version));
+            }
+        }
+
+        Err(Errors::KeyNotFound)
     }
 }
 
