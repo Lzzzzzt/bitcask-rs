@@ -46,11 +46,11 @@ impl<'a> WriteBatch<'a> {
 
         let mut pending = self.pending.write();
 
-        let real_index = self.engine.get_index(key);
+        let index = self.engine.get_index(key);
 
         // if the data that store in this batch but not in the engine,
         // the delete the data in the batch
-        if real_index.get(key).is_none() && pending.contains_key(key) {
+        if index.get(key).is_none() && pending.contains_key(key) {
             pending.remove(key);
             return Ok(());
         }
@@ -103,11 +103,11 @@ impl<'a> WriteBatch<'a> {
         record_and_position
             .into_iter()
             .try_for_each(|(record, pos)| {
-                let real_index = self.engine.get_index(&record.key);
+                let index = self.engine.get_index(&record.key);
 
                 let position = match record.record_type {
-                    RecordDataType::Deleted => Some(real_index.del(&record.key)?),
-                    RecordDataType::Normal => real_index.put(record.key, pos)?,
+                    RecordDataType::Deleted => Some(index.del(&record.key)?),
+                    RecordDataType::Normal => index.put(record.key, pos)?,
                     RecordDataType::Commited => unreachable!(),
                 };
 
@@ -184,10 +184,19 @@ mod tests {
 
         let key2: Vec<u8> = gen_key.fake::<String>().into();
         let value2: Vec<u8> = gen_value.fake::<String>().into();
+        let res = engine.put(key2.clone(), value2.clone());
+        assert!(res.is_ok());
+
         let res = batch.put(key2.clone(), value2.clone());
         assert!(res.is_ok());
 
-        assert!(batch.del(&key1).is_ok());
+        let key3: Vec<u8> = gen_key.fake::<String>().into();
+        let value3: Vec<u8> = gen_value.fake::<String>().into();
+        let res = engine.put(key3.clone(), value3.clone());
+        assert!(res.is_ok());
+
+        batch.del(&key1)?;
+        batch.del(&key3)?;
 
         batch.commit()?;
 
@@ -197,6 +206,30 @@ mod tests {
         let res = engine.get(&key2);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), value2);
+
+        assert!(engine.state().reclaimable_size.as_u64() > 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn other() -> Result<(), Box<dyn Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let engine = Engine::open(Config::test_config(temp_dir.path().to_path_buf()))?;
+
+        let config = WriteBatchConfig {
+            max_bacth_size: 1,
+            sync_write: false,
+        };
+
+        let mut batch = engine.new_write_batch(config)?;
+
+        batch.commit()?;
+
+        batch.put(b"a".to_vec(), b"a1".to_vec())?;
+        batch.put(b"b".to_vec(), b"a1".to_vec())?;
+
+        assert!(batch.commit().is_err());
 
         Ok(())
     }

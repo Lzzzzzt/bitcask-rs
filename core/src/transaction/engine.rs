@@ -3,6 +3,8 @@ use std::thread::{self};
 
 use crossbeam_channel::unbounded;
 
+use crate::config::IndexType;
+use crate::errors::Errors;
 use crate::{
     db::{Engine, EngineState},
     errors::BCResult,
@@ -17,6 +19,10 @@ pub struct TxnEngine {
 
 impl TxnEngine {
     pub fn new(engine: Engine) -> BCResult<Self> {
+        if engine.config.index_type == IndexType::HashMap {
+            return Err(Errors::TxnHashmapError);
+        }
+
         let (tx, rx) = unbounded();
         let manager = TxnManager::from_file_or_init(engine.config.clone(), tx)?;
 

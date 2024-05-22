@@ -394,6 +394,7 @@ impl ReadRecord {
         let value_end = value_start + self.value_size as usize;
         let key_start = value_end;
         let key_end = key_start + self.key_size as usize;
+
         Record {
             record_type: self.record_type,
             batch_state: self.batch_state,
@@ -428,7 +429,7 @@ mod tests {
         let encoded_normal_record = nomarl_record.encode();
 
         assert!(encoded_normal_record.len() > 5);
-        // assert_eq!(3762633406, nomarl_record.crc());
+        assert_eq!(2646268130, nomarl_record.crc());
 
         // value is empty
         let value_is_empty = Record::normal("foo".into(), "".into());
@@ -436,7 +437,7 @@ mod tests {
         let encoded_normal_record = value_is_empty.encode();
 
         assert!(encoded_normal_record.len() > 5);
-        // assert_eq!(260641321, value_is_empty.crc());
+        assert_eq!(4032285557, value_is_empty.crc());
 
         // type is deleted
         let type_is_deleted = Record::deleted("foo".into());
@@ -444,6 +445,166 @@ mod tests {
         let encoded_normal_record = type_is_deleted.encode();
 
         assert!(encoded_normal_record.len() > 5);
-        // assert_eq!(2852002205, type_is_deleted.crc());
+        assert_eq!(2278103429, type_is_deleted.crc());
+    }
+
+    #[test]
+    fn record_position_encode() {
+        let position = RecordPosition::new(0, 0, 0);
+        let encoded = position.encode();
+        assert_eq!(encoded, vec![0; encoded.len()]);
+    }
+
+    #[test]
+    fn record_decode() {
+        // normal record
+        let record = Record::normal("foo".into(), "bar".into());
+
+        let encoded = record.encode();
+
+        let read_record = ReadRecord::decode_vec(encoded).unwrap();
+
+        assert_eq!(record.key, read_record.key());
+        assert_eq!(record.value, read_record.value());
+        assert_eq!(record.record_type, read_record.record_type);
+        assert_eq!(record.batch_state, read_record.batch_state);
+        assert_eq!(record.expire, read_record.expire);
+
+        // batch record
+        let record = Record::batch_finished(1);
+
+        let encoded = record.encode();
+
+        let read_record = ReadRecord::decode_vec(encoded).unwrap();
+
+        assert_eq!(record.key, read_record.key());
+        assert_eq!(record.value, read_record.value());
+        assert_eq!(record.record_type, read_record.record_type);
+        assert_eq!(record.batch_state, read_record.batch_state);
+        assert_eq!(record.expire, read_record.expire);
+
+        // expire record
+        let record = Record::normal("foo".into(), "bar".into())
+            .expire(Duration::from_secs(1))
+            .unwrap();
+
+        let encoded = record.encode();
+
+        let read_record = ReadRecord::decode_vec(encoded).unwrap();
+
+        assert_eq!(record.key, read_record.key());
+        assert_eq!(record.value, read_record.value());
+        assert_eq!(record.record_type, read_record.record_type);
+        assert_eq!(record.batch_state, read_record.batch_state);
+        assert_eq!(record.expire, read_record.expire);
+
+        // deleted record
+        let record = Record::deleted("foo".into());
+
+        let encoded = record.encode();
+
+        let read_record = ReadRecord::decode_vec(encoded).unwrap();
+
+        assert_eq!(record.key, read_record.key());
+        assert_eq!(record.value, read_record.value());
+        assert_eq!(record.record_type, read_record.record_type);
+        assert_eq!(record.batch_state, read_record.batch_state);
+        assert_eq!(record.expire, read_record.expire);
+
+        // change crc
+        let record = Record::normal("foo".into(), "bar".into());
+
+        let mut encoded = record.encode();
+        let encoded_len = encoded.len();
+
+        encoded[encoded_len - 4..encoded_len].copy_from_slice(&0u32.to_be_bytes());
+
+        assert!(ReadRecord::decode_vec(encoded).is_err());
+
+        // read record to record
+        let record = Record::normal("foo".into(), "bar".into());
+
+        let encoded = record.encode();
+
+        let read_record = ReadRecord::decode_vec(encoded).unwrap();
+
+        let record = read_record.into_log_record();
+
+        assert_eq!(record.key, "foo".as_bytes());
+        assert_eq!(record.value, "bar".as_bytes());
+    }
+
+    #[test]
+    fn expire() {
+        let record = Record::normal("foo".into(), "bar".into())
+            .expire(Duration::from_secs(1))
+            .unwrap();
+
+        assert!(!record.is_expire());
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        assert!(record.is_expire());
+
+        let record = Record::normal("foo".into(), "bar".into());
+
+        assert!(!record.is_expire());
+    }
+
+    #[test]
+    fn other() {
+        // test disable batch
+        let mut record = Record::normal("foo".into(), "bar".into()).enable_batch(1);
+
+        assert_ne!(RecordBatchState::Disable, record.batch_state);
+
+        record.disable_batch();
+
+        assert_eq!(RecordBatchState::Disable, record.batch_state);
+    }
+
+    #[test]
+    fn record_data_type_from() {
+        assert_eq!(
+            RecordDataType::Deleted,
+            RecordDataType::try_from(0).unwrap()
+        );
+        assert_eq!(RecordDataType::Normal, RecordDataType::try_from(1).unwrap());
+        assert_eq!(
+            RecordDataType::Commited,
+            RecordDataType::try_from(2).unwrap()
+        );
+        assert!(RecordDataType::try_from(3).is_err());
+    }
+
+    #[test]
+    fn record_batch_state_from_and_into() {
+        
+        let state = RecordBatchState::Enable(NonZeroU64::new(1).unwrap());
+        assert_eq!(1, u64::from(state));
+
+        let state = RecordBatchState::Disable;
+        assert_eq!(0, u64::from(state));
+
+        let state = 1;
+        assert_eq!(RecordBatchState::Enable(NonZeroU64::new(1).unwrap()), state.into());
+
+        let state = 0;
+        assert_eq!(RecordBatchState::Disable, state.into());
+    }
+
+    #[test]
+    fn record_expire_state_from_and_into() {
+        let state = RecordExpireState::Enable(NonZeroU128::new(1).unwrap());
+        assert_eq!(1, u128::from(state));
+
+        let state = RecordExpireState::Disable;
+        assert_eq!(0, u128::from(state));
+
+        let state = 1;
+        assert_eq!(RecordExpireState::Enable(NonZeroU128::new(1).unwrap()), state.into());
+
+        let state = 0;
+        assert_eq!(RecordExpireState::Disable, state.into());
     }
 }

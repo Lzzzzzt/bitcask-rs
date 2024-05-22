@@ -42,4 +42,18 @@ pub mod tests {
 
         Engine::open(config)
     }
+
+    #[test]
+    fn key_hash() {
+        assert_eq!(super::key_hash(&[1, 2, 3, 4], 4), 1);
+        assert_eq!(super::key_hash(&[2, 3, 4, 5], 4), 2);
+        assert_eq!(super::key_hash(&[3, 4, 5, 6], 4), 3);
+        assert_eq!(super::key_hash(&[4, 5, 6, 7], 4), 0);
+    }
+
+    #[test]
+    fn check_key_valid() {
+        assert!(super::check_key_valid(&[1, 2, 3, 4]).is_ok());
+        assert!(super::check_key_valid(&[]).is_err());
+    }
 }

@@ -14,7 +14,7 @@ fn open(temp_dir: PathBuf) -> Engine {
         bytes_per_sync: 0,
         index_type: bitcask_rs_core::config::IndexType::BTree,
         index_num: 32,
-        start_with_mmap: false
+        start_with_mmap: false,
     };
 
     Engine::open(config).unwrap()
@@ -164,5 +164,5 @@ fn bench_multithread(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench, bench_7_get_3_put, bench_multithread,);
+criterion_group!(benches, bench_multithread, bench, bench_7_get_3_put);
 criterion_main!(benches);

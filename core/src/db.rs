@@ -579,6 +579,7 @@ mod tests {
     use fake::faker::lorem::en::{Sentence, Word};
     use fake::Fake;
 
+    use crate::config::IndexType;
     use crate::utils::tests::open;
 
     use super::*;
@@ -862,10 +863,20 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn state() -> BCResult<()> {
+    fn state(index_type: IndexType) -> BCResult<()> {
         let temp_dir = tempfile::tempdir().unwrap();
-        let engine = open(temp_dir.path().to_path_buf())?;
+
+        let config = Config {
+            file_size_threshold: 64 * 1000 * 1000,
+            db_path: temp_dir.path().to_path_buf(),
+            sync_write: false,
+            bytes_per_sync: 0,
+            index_type,
+            index_num: 4,
+            start_with_mmap: false,
+        };
+
+        let engine = Engine::open(config)?;
         let word = Word();
         let sentence = Sentence(64..65);
 
@@ -875,6 +886,8 @@ mod tests {
         assert_eq!(state.disk_size.as_u64(), 0);
         assert_eq!(state.key_num, 0);
         assert_eq!(state.reclaimable_size.as_u64(), 0);
+
+        assert!(engine.is_empty());
 
         // put one normal record
         let key: String = word.fake();
@@ -898,6 +911,101 @@ mod tests {
         assert!(state.disk_size.as_u64() > 0);
         assert_eq!(state.key_num, 0);
         assert!(state.reclaimable_size.as_u64() > 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn state_with_btree() -> BCResult<()> {
+        state(IndexType::BTree)?;
+        Ok(())
+    }
+    #[test]
+    fn state_with_hashmap() -> BCResult<()> {
+        state(IndexType::HashMap)?;
+        Ok(())
+    }
+    #[test]
+    fn state_with_skiplist() -> BCResult<()> {
+        state(IndexType::SkipList)?;
+        Ok(())
+    }
+
+    #[test]
+    fn start_with_mmap() -> BCResult<()> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let engine = open(temp_dir.path().to_path_buf())?;
+        let word = Word();
+        let sentence = Sentence(64..65);
+
+        // get one normal record
+        let key: String = word.fake();
+        let value = sentence.fake::<String>();
+        let res = engine.put(key.clone(), value.clone());
+        assert!(res.is_ok());
+        let res = engine.get(key.as_bytes());
+        assert!(res.is_ok());
+        assert_eq!(value.as_bytes(), res.unwrap());
+
+        // get the inexistent key;
+        let res = engine.get(word.fake::<String>().as_bytes());
+        assert!(res.is_err());
+        assert!(matches!(res.unwrap_err(), Errors::KeyNotFound));
+
+        // read after value is repeated put
+        let value = sentence.fake::<String>();
+        let res = engine.put(key.clone(), value.clone());
+        assert!(res.is_ok());
+        let res = engine.get(key.as_bytes());
+        assert!(res.is_ok());
+        assert_eq!(value.as_bytes(), res.unwrap());
+
+        // read after delete
+        let key: String = word.fake();
+        let value = sentence.fake::<String>();
+        let res = engine.put(key.clone(), value.clone());
+        assert!(res.is_ok());
+        let res = engine.del(key.as_bytes());
+        assert!(res.is_ok());
+        let res = engine.get(key.as_bytes());
+        assert!(res.is_err());
+        assert!(matches!(res.unwrap_err(), Errors::KeyNotFound));
+
+        // read from old data files instead of active file
+        let old_key: String = "111".into();
+        let old_value: String = "222".into();
+        engine.put(old_key.clone(), old_value.clone())?;
+
+        for _ in 0..200000 {
+            let key: String = word.fake();
+            let value: String = sentence.fake();
+            engine.put(key, value)?;
+        }
+        let res = engine.get(old_key.as_bytes());
+        assert!(res.is_ok());
+        assert_eq!(old_value, String::from_utf8(res.unwrap()).unwrap());
+
+        engine.close()?;
+
+        let config = Config {
+            file_size_threshold: 64 * 1000 * 1000,
+            db_path: temp_dir.path().to_path_buf(),
+            sync_write: true,
+            bytes_per_sync: 0,
+            index_type: crate::config::IndexType::BTree,
+            index_num: 4,
+            start_with_mmap: true,
+        };
+
+        let engine = Engine::open(config)?;
+
+        let res = engine.get(old_key.as_bytes());
+        assert!(res.is_ok());
+        assert_eq!(old_value, String::from_utf8(res.unwrap()).unwrap());
+
+        let key: String = word.fake();
+        let value: String = sentence.fake();
+        engine.put(key, value)?;
 
         Ok(())
     }

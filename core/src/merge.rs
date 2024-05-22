@@ -112,6 +112,9 @@ impl Engine {
             .filter_map(|f| f.ok())
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .filter(|filename| filename.ends_with(DB_DATA_FILE_SUFFIX))
+            .filter(|filename| {
+                filename.starts_with(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'])
+            })
             .collect();
 
         let mut merge_finished = false;
@@ -137,6 +140,7 @@ impl Engine {
                 std::fs::remove_file(filename).unwrap();
             }
         }
+
         // cp merged file to db path
         for f in merged_filenames {
             let src = path.join(&f);
@@ -230,6 +234,8 @@ mod tests {
         let word = Word();
         let sentence = Sentence(64..65);
 
+        assert!(engine.merge().is_ok());
+
         let test_keys = (0..1024).map(|_| word.fake::<String>());
         let test_vals = (0..1024).map(|_| sentence.fake::<String>());
 
@@ -245,6 +251,12 @@ mod tests {
 
         let res = engine.merge();
         assert!(res.is_ok());
+
+        engine.close()?;
+
+        open(temp_dir.path().to_path_buf())?;
+
+        drop(temp_dir);
 
         Ok(())
     }
@@ -290,5 +302,39 @@ mod tests {
         put_handler.join().unwrap();
 
         Ok(())
+    }
+
+    #[test]
+    fn merge_dir_is_exist() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let engine = open(temp_dir.path().to_path_buf()).unwrap();
+
+        let merge_path = merge_path(&engine.config.db_path);
+        std::fs::create_dir_all(merge_path).unwrap();
+
+        engine.put("foo", "bar").unwrap();
+
+        let res = engine.merge();
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn no_permission_for_create_merge_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let engine = open(temp_dir.path().to_path_buf()).unwrap();
+
+        let mut perms = std::fs::metadata(&engine.config.db_path)
+            .unwrap()
+            .permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&engine.config.db_path, perms).unwrap();
+
+        engine.put("foo", "bar").unwrap();
+
+        let res = engine.merge();
+        assert!(matches!(
+            res.unwrap_err(),
+            Errors::CreateMergeDirFailed(_, _)
+        ));
     }
 }

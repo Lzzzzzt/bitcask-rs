@@ -108,4 +108,40 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn put_get_del() -> BCResult<()> {
+        let bt = BTree::default();
+
+        // Put a record
+        assert!(bt.put("Hello".into(), RecordPosition::new(0, 1, 5)).is_ok());
+
+        // Get the record
+        let key1: Vec<u8> = "Hello".into();
+        assert_eq!(bt.get(&key1), Some(RecordPosition::new(0, 1, 5)));
+
+        // Delete the record
+        assert!(bt.del(b"Hello").is_ok());
+        assert_eq!(bt.get(b"Hello"), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn exist_is_empty_len() -> BCResult<()> {
+        let bt = BTree::default();
+
+        // Check if the BTree is initially empty
+        assert!(bt.is_empty());
+        assert_eq!(bt.len(), 0);
+
+        // Put a record
+        assert!(bt.put("Hello".into(), RecordPosition::new(0, 1, 5)).is_ok());
+
+        // Check if the BTree is not empty and has a length of 1
+        assert!(!bt.is_empty());
+        assert_eq!(bt.len(), 1);
+
+        Ok(())
+    }
 }

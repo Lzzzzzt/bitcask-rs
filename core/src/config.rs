@@ -48,7 +48,7 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexType {
     BTree,
     SkipList,
@@ -86,5 +86,51 @@ mod tests {
                 start_with_mmap: false,
             }
         }
+    }
+
+    #[test]
+    fn test_config_check() {
+        let config = Config {
+            file_size_threshold: 0,
+            db_path: "/tmp/bitcask_rs".into(),
+            sync_write: false,
+            bytes_per_sync: 0,
+            index_type: IndexType::SkipList,
+            index_num: 8,
+            start_with_mmap: false,
+        };
+
+        assert!(matches!(
+            config.check().unwrap_err(),
+            Errors::DataFileSizeTooSmall(0)
+        ));
+
+        let config = Config {
+            file_size_threshold: 256 << 10,
+            db_path: "".into(),
+            sync_write: false,
+            bytes_per_sync: 0,
+            index_type: IndexType::SkipList,
+            index_num: 8,
+            start_with_mmap: false,
+        };
+
+        assert!(matches!(config.check().unwrap_err(), Errors::DirPathEmpty));
+
+        let config = Config {
+            file_size_threshold: 256 << 10,
+            db_path: "/tmp/bitcask_rs".into(),
+            sync_write: false,
+            bytes_per_sync: 0,
+            index_type: IndexType::SkipList,
+            index_num: 8,
+            start_with_mmap: false,
+        };
+
+        assert!(config.check().is_ok());
+
+        let config = Config::default();
+
+        assert!(config.check().is_ok());
     }
 }

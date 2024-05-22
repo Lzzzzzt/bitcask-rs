@@ -44,28 +44,11 @@ impl Indexer for HashMap {
 
     fn transaction_prefix_search(
         &self,
-        prefix: &[u8],
-        search_type: TxnSearchType,
-        transaction: &Transaction,
+        _: &[u8],
+        _: TxnSearchType,
+        _: &Transaction,
     ) -> BCResult<(RecordPosition, u64)> {
-        let map = self.inner.read();
-
-        for key in map.keys() {
-            if key.len() - prefix.len() == 8 && key.starts_with(prefix) {
-                let version = u64::from_be_bytes(*key.last_chunk::<8>().unwrap());
-
-                if !transaction.is_visible(version) {
-                    match search_type {
-                        TxnSearchType::Read => continue,
-                        TxnSearchType::Write => return Err(Errors::TxnConflict),
-                    }
-                }
-
-                return Ok((map[key], version));
-            }
-        }
-
-        Err(Errors::KeyNotFound)
+        unreachable!()
     }
 }
 

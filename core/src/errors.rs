@@ -76,6 +76,8 @@ pub enum Errors {
     TxnInfoCreateFailed(std::io::Error),
     #[error("Failed to Read Transaction Controllor State: {0}")]
     TxnInfoReadFailed(Box<ErrorKind>),
+    #[error("Transaction Engine can't use Hashmap as memory index")]
+    TxnHashmapError,
 }
 
 pub type BCResult<T> = std::result::Result<T, Errors>;

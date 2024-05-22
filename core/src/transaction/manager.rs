@@ -15,7 +15,6 @@ use crate::{
 pub(crate) struct TxnManager {
     version: AtomicU64,
     active_txn: Mutex<HashMap<u64, Vec<Vec<u8>>>>,
-
     config: Config,
 
     pub(crate) pending_clean: Mutex<Vec<(u64, Vec<u8>)>>,
@@ -108,11 +107,5 @@ impl TxnManager {
 
     pub(crate) fn mark_to_clean(&self, version: u64, key: Vec<u8>) {
         self.pending_clean.lock().push((version, key));
-    }
-
-    pub(crate) fn is_oldest(&self, version: u64) -> bool {
-        let active = self.active_txn.lock();
-        let min = active.keys().min().unwrap();
-        version == *min
     }
 }

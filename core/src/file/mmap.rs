@@ -32,7 +32,7 @@ impl MemoryMappedFile {
 
 impl IO for MemoryMappedFile {
     fn write(&mut self, _: &[u8], _: u32) -> crate::errors::BCResult<u32> {
-        unimplemented!()
+        unreachable!()
     }
 
     fn read(&self, buf: &mut [u8], offset: u32) -> crate::errors::BCResult<u32> {
@@ -46,7 +46,7 @@ impl IO for MemoryMappedFile {
     }
 
     fn sync(&self) -> crate::errors::BCResult<()> {
-        unimplemented!()
+        unreachable!()
     }
 }
 
@@ -90,5 +90,23 @@ mod tests {
         assert_eq!(b"World", &buf);
 
         Ok(())
+    }
+
+    #[test]
+    #[should_panic]
+    fn write() {
+        let path = tempfile::tempfile().unwrap();
+        let mut file: MemoryMappedFile = path.try_into().unwrap();
+
+        file.write(b"Hello", 0).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn sync() {
+        let path = tempfile::tempfile().unwrap();
+        let file: MemoryMappedFile = path.try_into().unwrap();
+
+        file.sync().unwrap();
     }
 }

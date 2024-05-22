@@ -98,8 +98,10 @@ pub(crate) fn data_file_name<P: AsRef<Path>>(p: P, id: u32) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-
-    use crate::{data::log_record::Record, errors::BCResult};
+    use crate::{
+        data::{data_file::data_file_name, log_record::Record},
+        errors::BCResult,
+    };
 
     use super::DataFile;
 
@@ -109,12 +111,32 @@ mod tests {
 
         let data_file1 = DataFile::new(temp_dir.path(), 0)?;
         assert_eq!(data_file1.id, 0);
+        assert_eq!(data_file1.write_offset, 0);
 
         let data_file2 = DataFile::new(temp_dir.path(), 0)?;
         assert_eq!(data_file2.id, 0);
+        assert_eq!(data_file2.write_offset, 0);
 
         let data_file3 = DataFile::new(temp_dir.path(), 666)?;
         assert_eq!(data_file3.id, 666);
+        assert_eq!(data_file3.write_offset, 0);
+
+        // test new hint file
+        let hint_file = DataFile::hint_file(temp_dir.path())?;
+        assert_eq!(hint_file.id, 0);
+
+        // test new merge finish file
+        let merge_finish_file = DataFile::merge_finish_file(temp_dir.path())?;
+        assert_eq!(merge_finish_file.id, 0);
+
+        // test new mapped file
+        let temp_dir = tempfile::tempdir().unwrap();
+        // create system file for mmap
+        std::fs::File::create(data_file_name(temp_dir.path(), 0)).unwrap();
+
+        let data_file = DataFile::new_mapped(temp_dir.path(), 0)?;
+        assert_eq!(data_file.id, 0);
+        assert_eq!(data_file.write_offset, 0);
 
         Ok(())
     }
