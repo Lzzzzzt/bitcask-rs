@@ -1,7 +1,12 @@
-use std::{path::PathBuf, sync::Arc, thread, time::Instant};
+use std::{path::PathBuf, thread::sleep, time::Duration};
 
 use bitcask_rs_core::{config::Config, db::Engine};
-use fake::{faker::lorem::en::Sentence, Fake};
+use fake::{
+    faker::lorem::{en::Sentence, raw::Sentence as TSentence},
+    locales::EN,
+    Fake,
+};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 fn open(temp_dir: PathBuf) -> Engine {
     let config = Config {
@@ -10,49 +15,33 @@ fn open(temp_dir: PathBuf) -> Engine {
         sync_write: false,
         bytes_per_sync: 0,
         index_type: bitcask_rs_core::config::IndexType::BTree,
-        index_num: 32,
-        start_with_mmap: false
+        index_num: 1,
+        start_with_mmap: false,
     };
 
     Engine::open(config).unwrap()
 }
 
+fn get_data_source(len: usize) -> (TSentence<EN>, TSentence<EN>) {
+    let key = Sentence(63..64);
+    let value = Sentence(len - 1..len);
+
+    (key, value)
+}
+
 fn main() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let engine = Arc::new(open(temp_dir.path().to_path_buf()));
+    let engine = open(temp_dir.path().to_path_buf());
 
-    let mut handlers = vec![];
+    let (key, value) = get_data_source(500);
 
-    for _ in 0..32 {
-        let eng = Arc::clone(&engine);
+    (0..1000).into_par_iter().for_each(|_| {
+        assert!(engine
+            .put(key.fake::<String>(), value.fake::<String>())
+            .is_ok());
+    });
 
-        handlers.push(thread::spawn(move || {
-            let key = Sentence(32..64);
-            let value = Sentence((3 << 10)..(5 << 10));
-            let mut costs = vec![];
+    println!("{:?}", engine.state());
 
-            for _ in 0..2000 {
-                let k = key.fake::<String>();
-                let v = value.fake::<String>();
-                let start = Instant::now();
-                assert!(eng.put(k, v).is_ok());
-                costs.push(start.elapsed().as_nanos());
-            }
-            costs
-        }));
-    }
-
-    let mut costs = vec![];
-    for handler in handlers {
-        costs.extend(handler.join().unwrap());
-    }
-
-    costs.sort_unstable();
-
-    println!("min: {}ns", costs.first().unwrap());
-    println!(
-        "avg: {}ns",
-        costs.iter().sum::<u128>() / costs.len() as u128
-    );
-    println!("max: {}ns", costs.last().unwrap());
+    sleep(Duration::from_secs(3600))
 }

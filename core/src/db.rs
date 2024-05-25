@@ -25,6 +25,20 @@ pub struct EngineState {
     pub disk_size: ByteSize,
 }
 
+impl From<EngineState> for std::collections::HashMap<String, String> {
+    fn from(s: EngineState) -> Self {
+        std::collections::HashMap::from([
+            ("Datafile num".to_string(), s.data_file_num.to_string()),
+            ("Key num".to_string(), s.key_num.to_string()),
+            (
+                "Reclaimable Size".to_string(),
+                s.reclaimable_size.to_string(),
+            ),
+            ("Disk Size".to_string(), s.disk_size.to_string()),
+        ])
+    }
+}
+
 pub struct Engine {
     /// Only used for update index
     fids: Vec<u32>,
@@ -147,7 +161,7 @@ impl Engine {
     /// + `value`: Bytes
     /// ## Return Value
     /// will return `Err` when `key` is empty
-    pub fn put<T: Into<Vec<u8>>>(&self, key: T, value: T) -> BCResult<()> {
+    pub fn put<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(&self, key: K, value: V) -> BCResult<()> {
         let key = key.into();
         let value = value.into();
         // make sure the key is valid
@@ -611,7 +625,7 @@ mod tests {
         assert_eq!(value.as_bytes(), res_value);
 
         // key is empty
-        let res = engine.put(Default::default(), value.clone());
+        let res = engine.put(String::default(), value.clone());
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Errors::KeyEmpty));
 
