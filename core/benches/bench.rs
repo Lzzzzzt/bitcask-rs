@@ -25,7 +25,7 @@ fn bench(c: &mut Criterion) {
     let engine = open(temp_dir.path().to_path_buf());
 
     let key = Sentence(32..64);
-    let value = Sentence((3 << 10)..(5 << 10));
+    let value = Sentence(8000..8001);
 
     let insert_keys: Vec<String> = (0..100000)
         .into_par_iter()
@@ -164,5 +164,5 @@ fn bench_multithread(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_multithread, bench, bench_7_get_3_put);
+criterion_group!(benches, bench);
 criterion_main!(benches);

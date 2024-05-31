@@ -30,6 +30,8 @@ pub enum Errors {
     // DBEngine
     #[error("Key Empty Error")]
     KeyEmpty,
+    #[error("Value is too large: current is {0}B and should less then {1}B")]
+    ValueTooLarge(u32, u32),
     #[error("Memory index update failed")]
     MemoryIndexUpdateFailed,
     #[error("Fild not found: filename: {0:09}{DB_DATA_FILE_SUFFIX}")]

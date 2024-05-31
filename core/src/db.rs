@@ -169,6 +169,7 @@ impl Engine {
         let value = value.into();
         // make sure the key is valid
         check_key_valid(&key)?;
+        check_value_valid(&value, self.config.file_size_threshold)?;
 
         // construct the `LogRecord`
         let record = Record::normal(key, value);
@@ -573,6 +574,15 @@ impl Drop for Engine {
     fn drop(&mut self) {
         if self.close().ok().is_some() {}
     }
+}
+
+fn check_value_valid(value: &[u8], max: u32) -> BCResult<()> {
+    let len = value.len() as u32;
+    if len > max {
+        return Err(Errors::ValueTooLarge(len, max));
+    }
+
+    Ok(())
 }
 
 fn load_datafile_id(dir: impl AsRef<Path>) -> BCResult<Vec<u32>> {
