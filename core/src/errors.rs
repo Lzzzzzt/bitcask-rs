@@ -79,6 +79,10 @@ pub enum Errors {
     #[error("Transaction Engine can't use Hashmap as memory index")]
     TxnHashmapError,
 
+    #[error("Create Backup File Failed: {0}")]
+    CreateBackupFileFailed(std::io::Error),
+    
+
     #[cfg(feature = "compression")]
     #[error("Compression Error: {0}")]
     CompressionFailed(std::io::Error),

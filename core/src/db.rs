@@ -1,9 +1,12 @@
 use std::fs::File;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use std::{fs, path::Path};
 
 use bytesize::ByteSize;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use fs4::FileExt;
 use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
@@ -283,6 +286,25 @@ impl Engine {
             reclaimable_size: ByteSize::b(self.reclaimable.load(Ordering::SeqCst) as u64),
             disk_size: ByteSize::b(self.bytes_written.load(Ordering::SeqCst) as u64),
         }
+    }
+
+    pub fn backup<T: ToString>(&self, name: T, path: Option<PathBuf>) -> BCResult<()> {
+        let target_path = if let Some(p) = path {
+            p
+        } else {
+            self.config.db_path.clone()
+        }
+        .join(format!("{}.backup.tar.gz", name.to_string()));
+
+        let target_file = File::create(target_path).map_err(Errors::CreateBackupFileFailed)?;
+
+        let enc = GzEncoder::new(target_file, Compression::default());
+        let mut tar = tar::Builder::new(enc);
+
+        tar.append_dir(".", &self.config.db_path)
+            .map_err(Errors::CreateBackupFileFailed)?;
+
+        Ok(())
     }
 
     pub(crate) fn txn_write(&self, record: Record) -> BCResult<()> {
@@ -1020,6 +1042,37 @@ mod tests {
         let key: String = word.fake();
         let value: String = sentence.fake();
         engine.put(key, value)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn backup() -> BCResult<()> {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let engine = open(temp_dir.path().to_path_buf())?;
+
+        let word = Word();
+        let sentence = Sentence(64..65);
+
+        for _ in 0..200000 {
+            let key: String = word.fake();
+            let value: String = sentence.fake();
+            engine.put(key, value)?;
+        }
+
+        // don't provide path
+        engine.backup("test", None)?;
+
+        let path = temp_dir.path().join("test.backup.tar.gz");
+
+        assert!(path.is_file());
+
+        // provide path
+        engine.backup("test", Some("/tmp".into()))?;
+
+        let path: PathBuf = "/tmp/test.backup.tar.gz".into();
+
+        assert!(path.is_file());
 
         Ok(())
     }
