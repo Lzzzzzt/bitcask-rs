@@ -164,5 +164,5 @@ fn bench_multithread(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench);
+criterion_group!(benches, bench, bench_7_get_3_put, bench_multithread);
 criterion_main!(benches);
