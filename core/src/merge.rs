@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use parking_lot::RwLock;
 
 use crate::consts::*;
-use crate::data::data_file::{data_file_name, DataFile};
+use crate::data::data_file::DataFile;
 use crate::data::log_record::{Record, RecordPosition};
 use crate::db::Engine;
 use crate::errors::{BCResult, Errors};
-use crate::utils::merge_path;
+use crate::utils::{data_file_name, merge_path};
 
 impl Engine {
     pub fn merge(&self) -> BCResult<()> {

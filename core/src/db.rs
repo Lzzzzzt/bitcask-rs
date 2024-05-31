@@ -338,10 +338,10 @@ impl Engine {
 
         // append record into active file
         let write_offset = active.write_offset;
-        active.write_record(record)?;
+        let writted = active.write_record(record)?;
 
         self.bytes_written
-            .fetch_add(record_len as usize, Ordering::SeqCst);
+            .fetch_add(writted as usize, Ordering::SeqCst);
 
         if config.sync_write
             && config.bytes_per_sync > 0
@@ -354,7 +354,7 @@ impl Engine {
         Ok(RecordPosition {
             fid: active.id,
             offset: write_offset,
-            size: record_len,
+            size: writted,
         })
     }
 

@@ -10,6 +10,9 @@ use crate::errors::{BCResult, Errors};
 use crate::file::io::IO;
 use crate::utils::{Key, Value};
 
+#[cfg(feature = "compression")]
+use std::io::Cursor;
+
 macro_rules! get {
     ($typ: ty, $data: expr, $index: expr) => {{
         const STEP: usize = std::mem::size_of::<$typ>();
@@ -307,6 +310,7 @@ pub struct ReadRecord {
     pub(crate) expire: RecordExpireState,
 }
 
+#[cfg(not(feature = "compression"))]
 impl ReadRecord {
     pub fn decode(io: &dyn IO, offset: u32) -> BCResult<Self> {
         let mut size_bytes: [u8; 8] = [0; 8];
@@ -323,7 +327,39 @@ impl ReadRecord {
 
         Self::decode_vec(data)
     }
+}
 
+#[cfg(feature = "compression")]
+impl ReadRecord {
+    pub fn decode(io: &dyn IO, offset: u32) -> BCResult<Self> {
+        let mut size_bytes: [u8; 8] = [0; 8];
+        io.read(&mut size_bytes, offset)?;
+        let size = u64::from_be_bytes(size_bytes);
+
+        if size == 0 {
+            return Err(Errors::DataFileEndOfFile);
+        }
+
+        let mut data = vec![0u8; size as usize];
+
+        io.read(&mut data, offset)?;
+
+        let mut data_without_size = Cursor::new(&data[8..]);
+
+        let mut decompressed = vec![];
+
+        brotli::BrotliDecompress(&mut data_without_size, &mut decompressed)
+            .map_err(Errors::CompressionFailed)?;
+
+        let mut length = (decompressed.len() + 8).to_be_bytes().to_vec();
+
+        length.extend_from_slice(&decompressed);
+
+        Self::decode_vec(length)
+    }
+}
+
+impl ReadRecord {
     pub fn decode_vec(data: Vec<u8>) -> BCResult<Self> {
         let data = data.into_boxed_slice();
 
@@ -579,7 +615,6 @@ mod tests {
 
     #[test]
     fn record_batch_state_from_and_into() {
-        
         let state = RecordBatchState::Enable(NonZeroU64::new(1).unwrap());
         assert_eq!(1, u64::from(state));
 
@@ -587,7 +622,10 @@ mod tests {
         assert_eq!(0, u64::from(state));
 
         let state = 1;
-        assert_eq!(RecordBatchState::Enable(NonZeroU64::new(1).unwrap()), state.into());
+        assert_eq!(
+            RecordBatchState::Enable(NonZeroU64::new(1).unwrap()),
+            state.into()
+        );
 
         let state = 0;
         assert_eq!(RecordBatchState::Disable, state.into());
@@ -602,7 +640,10 @@ mod tests {
         assert_eq!(0, u128::from(state));
 
         let state = 1;
-        assert_eq!(RecordExpireState::Enable(NonZeroU128::new(1).unwrap()), state.into());
+        assert_eq!(
+            RecordExpireState::Enable(NonZeroU128::new(1).unwrap()),
+            state.into()
+        );
 
         let state = 0;
         assert_eq!(RecordExpireState::Disable, state.into());

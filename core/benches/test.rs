@@ -1,4 +1,4 @@
-use std::{path::PathBuf, thread::sleep, time::Duration};
+use std::{path::PathBuf, time::Instant};
 
 use bitcask_rs_core::{config::Config, db::Engine};
 use fake::{
@@ -6,7 +6,9 @@ use fake::{
     locales::EN,
     Fake,
 };
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 fn open(temp_dir: PathBuf) -> Engine {
     let config = Config {
@@ -14,8 +16,8 @@ fn open(temp_dir: PathBuf) -> Engine {
         db_path: temp_dir,
         sync_write: false,
         bytes_per_sync: 0,
-        index_type: bitcask_rs_core::config::IndexType::BTree,
-        index_num: 1,
+        index_type: bitcask_rs_core::config::IndexType::HashMap,
+        index_num: 32,
         start_with_mmap: false,
     };
 
@@ -29,19 +31,36 @@ fn get_data_source(len: usize) -> (TSentence<EN>, TSentence<EN>) {
     (key, value)
 }
 
-fn main() {
+fn bench(size: usize) {
     let temp_dir = tempfile::tempdir().unwrap();
     let engine = open(temp_dir.path().to_path_buf());
 
-    let (key, value) = get_data_source(500);
+    let (key, value) = get_data_source(size);
 
-    (0..1000).into_par_iter().for_each(|_| {
-        assert!(engine
-            .put(key.fake::<String>(), value.fake::<String>())
-            .is_ok());
+    let mut insert_keys: Vec<String> = (0..1000000)
+        .into_par_iter()
+        .map(|_| {
+            let k = key.fake::<String>();
+            assert!(engine.put(k.clone(), value.fake::<String>()).is_ok());
+            k
+        })
+        .collect();
+
+    let mut rng = thread_rng();
+
+    insert_keys.shuffle(&mut rng);
+
+    let start = Instant::now();
+
+    insert_keys.par_iter().for_each(|k| {
+        assert!(engine.get(k).is_ok());
     });
 
-    println!("{:?}", engine.state());
+    println!("{size}: {:?}", start.elapsed() / 1000000);
+}
 
-    sleep(Duration::from_secs(3600))
+fn main() {
+    for size in [500, 4000] {
+        bench(size);
+    }
 }

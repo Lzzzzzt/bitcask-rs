@@ -78,6 +78,10 @@ pub enum Errors {
     TxnInfoReadFailed(Box<ErrorKind>),
     #[error("Transaction Engine can't use Hashmap as memory index")]
     TxnHashmapError,
+
+    #[cfg(feature = "compression")]
+    #[error("Compression Error: {0}")]
+    CompressionFailed(std::io::Error),
 }
 
 pub type BCResult<T> = std::result::Result<T, Errors>;

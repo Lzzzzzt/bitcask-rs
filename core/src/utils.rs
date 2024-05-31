@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::errors::{BCResult, Errors};
+use crate::{consts::DB_DATA_FILE_SUFFIX, errors::{BCResult, Errors}};
 
 pub type Key = Vec<u8>;
 pub type Value = Vec<u8>;
@@ -21,6 +21,11 @@ pub fn key_hash(key: &[u8], num: u8) -> usize {
 
 pub(crate) fn merge_path<P: AsRef<Path>>(p: P) -> PathBuf {
     p.as_ref().join(".merge")
+}
+
+pub(crate) fn data_file_name<P: AsRef<Path>>(p: P, id: u32) -> PathBuf {
+    p.as_ref()
+        .join(format!("{:09}.{}", id, DB_DATA_FILE_SUFFIX))
 }
 
 #[cfg(test)]

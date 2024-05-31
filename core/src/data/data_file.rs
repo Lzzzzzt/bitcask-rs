@@ -1,11 +1,23 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::errors::BCResult;
 use crate::file::io::{create_io_manager, IOType, IO};
 
 use crate::consts::*;
+use crate::utils::data_file_name;
 
 use super::log_record::{ReadRecord, Record};
+
+#[cfg(feature = "compression")]
+use {
+    crate::errors::Errors,
+    brotli::enc::BrotliEncoderParams,
+    std::{io::Cursor, mem::size_of},
+};
+#[cfg(feature = "compression")]
+lazy_static::lazy_static! {
+    static ref COMPRESSION_PARAMS: BrotliEncoderParams = BrotliEncoderParams::default();
+}
 
 pub struct DataFile {
     pub(crate) id: u32,
@@ -55,24 +67,6 @@ impl DataFile {
         })
     }
 
-    pub fn write_record(&mut self, record: &Record) -> BCResult<u32> {
-        let encoded = record.encode();
-        let write_size = self.io.write(&encoded, self.write_offset)?;
-        self.write_offset += write_size;
-        Ok(write_size)
-    }
-
-    /// read `ReadLogRecord` from data file by offset
-    pub fn read_record(&self, offset: u32) -> BCResult<ReadRecord> {
-        ReadRecord::decode(self.io.as_ref(), offset)
-    }
-
-    pub fn read_record_with_size(&self, offset: u32, size: u32) -> BCResult<ReadRecord> {
-        let mut data = vec![0; size as usize];
-        self.io.read(&mut data, offset)?;
-        ReadRecord::decode_vec(data)
-    }
-
     pub fn sync(&self) -> BCResult<()> {
         self.io.sync()
     }
@@ -91,19 +85,74 @@ impl DataFile {
     }
 }
 
-pub(crate) fn data_file_name<P: AsRef<Path>>(p: P, id: u32) -> PathBuf {
-    p.as_ref()
-        .join(format!("{:09}.{}", id, DB_DATA_FILE_SUFFIX))
+#[cfg(not(feature = "compression"))]
+impl DataFile {
+    pub fn write_record(&mut self, record: &Record) -> BCResult<u32> {
+        let encoded = record.encode();
+        let write_size = self.io.write(&encoded, self.write_offset)?;
+        self.write_offset += write_size;
+        Ok(write_size)
+    }
+
+    /// read `ReadLogRecord` from data file by offset
+    pub fn read_record(&self, offset: u32) -> BCResult<ReadRecord> {
+        ReadRecord::decode(self.io.as_ref(), offset)
+    }
+
+    pub fn read_record_with_size(&self, offset: u32, size: u32) -> BCResult<ReadRecord> {
+        let mut data = vec![0; size as usize];
+        self.io.read(&mut data, offset)?;
+        ReadRecord::decode_vec(data)
+    }
+}
+
+#[cfg(feature = "compression")]
+impl DataFile {
+    pub fn write_record(&mut self, record: &Record) -> BCResult<u32> {
+        let encoded = record.encode();
+
+        let mut to_compress = Cursor::new(&encoded[size_of::<u64>()..]);
+        let mut compressed: Vec<_> = vec![];
+
+        brotli::BrotliCompress(&mut to_compress, &mut compressed, &COMPRESSION_PARAMS)
+            .map_err(Errors::CompressionFailed)?;
+
+        let mut compressed_size = (compressed.len() + 8).to_be_bytes().to_vec();
+
+        compressed_size.extend_from_slice(&compressed);
+
+        let write_size = self.io.write(&compressed_size, self.write_offset)?;
+
+        self.write_offset += write_size;
+        Ok(write_size)
+    }
+
+    pub fn read_record(&self, offset: u32) -> BCResult<ReadRecord> {
+        ReadRecord::decode(self.io.as_ref(), offset)
+    }
+
+    pub fn read_record_with_size(&self, offset: u32, size: u32) -> BCResult<ReadRecord> {
+        let mut data = vec![0; size as usize];
+        self.io.read(&mut data, offset)?;
+
+        let mut data_without_size = Cursor::new(&data[8..]);
+
+        let mut decompressed = vec![];
+
+        brotli::BrotliDecompress(&mut data_without_size, &mut decompressed)
+            .map_err(Errors::CompressionFailed)?;
+
+        let mut length = (decompressed.len() + 8).to_be_bytes().to_vec();
+
+        length.extend_from_slice(&decompressed);
+
+        ReadRecord::decode_vec(length)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        data::{data_file::data_file_name, log_record::Record},
-        errors::BCResult,
-    };
-
-    use super::DataFile;
+    use super::*;
 
     #[test]
     fn new() -> BCResult<()> {
