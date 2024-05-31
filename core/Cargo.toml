@@ -22,7 +22,6 @@ name = "test"
 harness = false
 
 [features]
-default = ["compression"]
 compression = ["brotli", "lazy_static"]
 
 
