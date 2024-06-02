@@ -2,11 +2,11 @@
 
 ## Features
 
-[x] CRUD
-[x] Key Expire
-[X] Write Batch
-[X] Simple MVCC transaction
-[x] Backup
+- [x] CRUD
+- [x] Key Expire
+- [X] Write Batch
+- [X] Simple MVCC transaction
+- [x] Backup
 
 ## Basic Usage
 ```Rust
