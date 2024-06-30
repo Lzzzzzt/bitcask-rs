@@ -2,6 +2,7 @@
 
 mod batch;
 mod data;
+pub(crate) mod file;
 mod index;
 mod merge;
 mod utils;
@@ -9,7 +10,6 @@ mod utils;
 pub mod config;
 pub mod db;
 pub mod errors;
-pub(crate) mod file;
 pub mod transaction;
 
 pub(crate) mod consts {

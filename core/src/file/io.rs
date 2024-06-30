@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::errors::BCResult;
+use crate::{config::IOType, errors::BCResult};
 
 use super::{mmap::MemoryMappedFile, system_file::SystemFile};
 
@@ -27,17 +27,12 @@ pub trait IO: Sync + Send {
     fn sync(&self) -> BCResult<()>;
 }
 
-pub(crate) enum IOType {
-    Syscall,
-    Mmap,
-}
-
 pub(crate) fn create_io_manager(
     filename: impl AsRef<Path>,
     io_type: IOType,
 ) -> BCResult<Box<dyn IO>> {
     match io_type {
-        IOType::Syscall => Ok(Box::new(SystemFile::new(filename)?)),
-        IOType::Mmap => Ok(Box::new(MemoryMappedFile::new(filename)?)),
+        IOType::System => Ok(Box::new(SystemFile::new(filename)?)),
+        IOType::MemoryMap => Ok(Box::new(MemoryMappedFile::new(filename)?)),
     }
 }

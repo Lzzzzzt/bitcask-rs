@@ -12,8 +12,8 @@ fn open(temp_dir: PathBuf) -> Engine {
         db_path: temp_dir,
         sync_write: false,
         bytes_per_sync: 0,
-        index_type: bitcask_rs_core::config::IndexType::BTree,
-        index_num: 32,
+        index_type: bitcask_rs_core::config::IndexType::HashMap,
+        index_num: 8,
         start_with_mmap: false,
     };
 
@@ -25,7 +25,7 @@ fn bench(c: &mut Criterion) {
     let engine = open(temp_dir.path().to_path_buf());
 
     let key = Sentence(32..64);
-    let value = Sentence(8000..8001);
+    let value = Sentence(4000..4001);
 
     let insert_keys: Vec<String> = (0..100000)
         .into_par_iter()
@@ -65,6 +65,7 @@ fn bench(c: &mut Criterion) {
     });
 }
 
+#[allow(unused)]
 fn bench_7_get_3_put(c: &mut Criterion) {
     let temp_dir = tempfile::tempdir().unwrap();
     let engine = open(temp_dir.path().to_path_buf());
@@ -105,5 +106,5 @@ fn bench_7_get_3_put(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench, bench_7_get_3_put);
+criterion_group!(benches, bench);
 criterion_main!(benches);

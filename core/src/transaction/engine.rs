@@ -18,6 +18,9 @@ pub struct TxnEngine {
 }
 
 impl TxnEngine {
+    /// 创建一个新的事务引擎
+    /// ## 参数
+    /// - `engine`: 数据库引擎
     pub fn new(engine: Engine) -> BCResult<Self> {
         if engine.config.index_type == IndexType::HashMap {
             return Err(Errors::TxnHashmapError);
@@ -55,41 +58,55 @@ impl TxnEngine {
         })
     }
 
+    /// 关闭事务引擎
     pub fn close(&self) -> BCResult<()> {
         self.manager.sync_to_file()?;
         self.engine.close()
     }
 
+    /// 同步事务引擎
     pub fn sync(&self) -> BCResult<()> {
         self.manager.sync_to_file()?;
         self.engine.sync()
     }
 
+    /// 判断引擎是否为空
     pub fn is_empty(&self) -> bool {
         self.engine.is_empty()
     }
 
+    /// 获取引擎状态
     pub fn state(&self) -> EngineState {
         self.engine.state()
     }
 
+    /// 开启一个新的事务
     pub fn begin_transaction(&self) -> Transaction {
         Transaction::begin(self.engine.clone(), self.manager.clone())
     }
 
+    /// 利用回调函数更新事务，将会自动提交、回滚事务
+    /// ## 参数
+    /// - `f`: 一个回调函数，接受一个事务引用，返回一个 BCResult
     pub fn update<F>(&self, f: F) -> BCResult<()>
     where
         F: Fn(&Transaction) -> BCResult<()>,
     {
         let txn = Transaction::begin(self.engine.clone(), self.manager.clone());
 
-        f(&txn)?;
+        let result = f(&txn);
+
+        if let Err(Errors::TxnConflict) = result {
+            txn.rollback()?;
+        } else {
+            result?;
+        }
 
         txn.commit()
     }
 
     #[cfg(test)]
-    pub fn get_engine(&self) -> Arc<Engine> {
+    pub(crate) fn get_engine(&self) -> Arc<Engine> {
         self.engine.clone()
     }
 }

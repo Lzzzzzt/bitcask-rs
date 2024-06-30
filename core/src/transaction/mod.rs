@@ -33,6 +33,7 @@ pub(crate) enum TxnSearchType {
     Write,
 }
 
+/// 事务
 pub struct Transaction {
     engine: Arc<Engine>,
     manager: Arc<TxnManager>,
@@ -53,12 +54,25 @@ impl Transaction {
         }
     }
 
+    /// 写入数据
+    /// ## 参数
+    /// - key: 键
+    /// - value: 值
+    /// ## 返回
+    /// - 成功返回 Ok(())
+    /// - 失败返回 Err(Errors)
     pub fn put<T: Into<Vec<u8>>>(&self, key: T, value: T) -> BCResult<()> {
         let key = key.into();
         check_key_valid(&key)?;
         self.write(Record::normal(key, value.into()))
     }
 
+    /// 删除数据
+    /// ## 参数
+    /// - key: 键
+    /// ## 返回
+    /// - 成功返回 Ok(())
+    /// - 失败返回 Err(Errors)
     pub fn del<T: Into<Vec<u8>>>(&self, key: T) -> BCResult<()> {
         let key = key.into();
         check_key_valid(&key)?;
@@ -70,6 +84,12 @@ impl Transaction {
         }
     }
 
+    /// 获取数据
+    /// ## 参数
+    /// - key: 键
+    /// ## 返回
+    /// - 成功返回 Ok(Vec<u8>)
+    /// - 失败返回 Err(Errors)
     pub fn get<T: AsRef<[u8]>>(&self, key: T) -> BCResult<Vec<u8>> {
         let key = key.as_ref();
         check_key_valid(key)?;
@@ -85,6 +105,10 @@ impl Transaction {
         }
     }
 
+    /// 提交事务
+    /// ## 返回
+    /// - 成功返回 Ok(())
+    /// - 失败返回 Err(Errors)
     pub fn commit(&self) -> BCResult<()> {
         // cleanup useless keys
         self.manager.remove_txn(self.version);
@@ -92,6 +116,10 @@ impl Transaction {
         self.engine.sync()
     }
 
+    /// 回滚事务
+    /// ## 返回
+    /// - 成功返回 Ok(())
+    /// - 失败返回 Err(Errors)
     pub fn rollback(&self) -> BCResult<()> {
         if let Some(keys) = self.manager.remove_txn(self.version) {
             for key in keys {

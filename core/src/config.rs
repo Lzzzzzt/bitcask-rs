@@ -2,26 +2,27 @@ use std::path::PathBuf;
 
 use crate::errors::{BCResult, Errors};
 
-/// the config for the db
 #[derive(Debug, Clone)]
+/// 数据库配置
 pub struct Config {
-    // db directory path
+    /// 数据库路径
     pub db_path: PathBuf,
-    // data file size in bytes
+    /// 数据文件大小阈值
     pub file_size_threshold: u32,
-    // if true, db engine will sync every write op, otherwise, just sync when file size is bigger then data file size
+    /// 是否同步写
     pub sync_write: bool,
-
+    /// 每多少字节同步一次
     pub bytes_per_sync: usize,
-
+    /// 索引类型
     pub index_type: IndexType,
-
+    /// 索引数量
     pub index_num: u8,
-
+    /// 是否使用 mmap 启动
     pub start_with_mmap: bool,
 }
 
 impl Config {
+    /// 检查配置是否合法
     pub fn check(&self) -> BCResult<()> {
         let path_string = self.db_path.to_str();
         if path_string.is_none() || path_string.unwrap().is_empty() {
@@ -49,15 +50,28 @@ impl Default for Config {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 索引类型
 pub enum IndexType {
+    /// BTree 索引
     BTree,
+    /// SkipList 索引
     SkipList,
+    /// HashMap 索引
     HashMap,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IOType {
+    System,
+    MemoryMap,
+}
+
 #[derive(Clone, Copy)]
+/// 写批次配置
 pub struct WriteBatchConfig {
+    /// 最大批次大小
     pub max_bacth_size: u32,
+    /// 是否同步写
     pub sync_write: bool,
 }
 

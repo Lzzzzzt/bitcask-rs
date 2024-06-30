@@ -21,10 +21,15 @@ use crate::transaction::{Transaction, TxnSearchType};
 use crate::utils::*;
 
 #[derive(Clone, Copy, Debug)]
+/// 数据库状态
 pub struct EngineState {
+    /// 数据文件数量
     pub data_file_num: usize,
+    /// key数量
     pub key_num: usize,
+    /// 可回收大小
     pub reclaimable_size: ByteSize,
+    /// 使用了多少磁盘空间
     pub disk_size: ByteSize,
 }
 
@@ -65,7 +70,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Open the Bitcask DBEngine
+    /// 打开数据库引擎，需要传入配置信息
     pub fn open(config: Config) -> BCResult<Self> {
         // check the config
         config.check()?;
@@ -148,6 +153,7 @@ impl Engine {
         Ok(engine)
     }
 
+    /// 关闭数据库引擎
     pub fn close(&self) -> BCResult<()> {
         if !self.config.db_path.is_dir() {
             return Ok(());
@@ -158,12 +164,15 @@ impl Engine {
         Ok(())
     }
 
-    /// Store the key-value set
-    /// ## Parameter
-    /// + `key`: Bytes, should not be empty
-    /// + `value`: Bytes
-    /// ## Return Value
-    /// will return `Err` when `key` is empty
+    /// `Put`操作，将key-value对存入数据库
+    /// ## 参数
+    /// + `key`: Vec<u8>, key值，不能为空
+    /// + `value`: Vec<u8>, value值
+    /// ## 返回值
+    /// 当`key`为空时，返回`Err`
+    /// 当`value`超过阈值时，返回`Err`
+    /// 当`key`已存在时，更新`value`
+    /// 当`key`不存在时，插入新的`key-value`对
     pub fn put<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(&self, key: K, value: V) -> BCResult<()> {
         let key = key.into();
         let value = value.into();
@@ -189,6 +198,16 @@ impl Engine {
         Ok(())
     }
 
+    /// `Put`操作，将key-value对存入数据库，并设置过期时间
+    /// ## 参数
+    /// + `key`: Vec<u8>, key值，不能为空
+    /// + `value`: Vec<u8>, value值
+    /// + `expire`: Duration, 过期时间
+    /// ## 返回值
+    /// 当`key`为空时，返回`Err`
+    /// 当`value`超过阈值时，返回`Err`
+    /// 当`key`已存在时，更新`value`
+    /// 当`key`不存在时，插入新的`key-value`对
     pub fn put_expire<T: Into<Vec<u8>>>(&self, key: T, value: T, expire: Duration) -> BCResult<()> {
         let key = key.into();
         let value = value.into();
@@ -213,11 +232,13 @@ impl Engine {
         Ok(())
     }
 
-    /// Query the key-value set
-    /// ## Parameter
-    /// + `key`: Bytes, should not be empty
-    /// ## Return Value
-    /// will return `Err` when `key` is empty
+    /// `Get`操作，根据key获取value
+    /// ## 参数
+    /// + `key`: &[u8], key值
+    /// ## 返回值
+    /// 当`key`不存在时，返回`Err`
+    /// 当`key`存在时，返回`Ok(Vec<u8>)`
+    /// 当`key`存在但已过期时，返回`Err`
     pub fn get<T: AsRef<[u8]>>(&self, key: T) -> BCResult<Vec<u8>> {
         let key = key.as_ref();
         // make sure the key is valid
@@ -243,9 +264,13 @@ impl Engine {
         }
     }
 
-    /// Delete the key-value set
-    /// ## Parameter
-    /// + `key`: Bytes, should not be empty
+    /// `Delete`操作，根据key删除`key-value`对
+    /// ## 参数
+    /// + `key`: Vec<u8>, key值
+    /// ## 返回值
+    /// 当`key`不存在时，返回`Ok`
+    /// 当`key`存在时，删除`key-value`对，并返回`Ok`
+    /// 当`key`为空时，返回`Err`
     pub fn del<T: Into<Value>>(&self, key: T) -> BCResult<()> {
         let key: Vec<_> = key.into();
 
@@ -270,14 +295,17 @@ impl Engine {
         Ok(())
     }
 
+    /// 同步数据到磁盘
     pub fn sync(&self) -> BCResult<()> {
         self.active.read().sync()
     }
 
+    /// 判断数据库是否为空
     pub fn is_empty(&self) -> bool {
         self.index.iter().all(|i| i.is_empty())
     }
 
+    /// 获取数据库引擎状态
     pub fn state(&self) -> EngineState {
         let key_num = self.index.iter().map(|i| i.len()).sum();
 
@@ -289,6 +317,13 @@ impl Engine {
         }
     }
 
+    /// 备份数据库
+    /// ## 参数
+    /// + `name`: T: ToString, 备份文件名
+    /// + `path`: Option<PathBuf>, 备份文件路径
+    /// ## 返回值
+    /// 当备份成功时，返回`Ok`
+    /// 当备份失败时，返回`Err`
     pub fn backup<T: ToString>(&self, name: T, path: Option<PathBuf>) -> BCResult<()> {
         let target_path = if let Some(p) = path {
             p

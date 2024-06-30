@@ -1,7 +1,8 @@
 use std::path::Path;
 
+use crate::config::IOType;
 use crate::errors::BCResult;
-use crate::file::io::{create_io_manager, IOType, IO};
+use crate::file::io::{create_io_manager, IO};
 
 use crate::consts::*;
 use crate::utils::data_file_name;
@@ -33,7 +34,7 @@ impl DataFile {
         Ok(Self {
             id,
             write_offset: 0,
-            io: create_io_manager(filename, IOType::Syscall)?,
+            io: create_io_manager(filename, IOType::System)?,
         })
     }
 
@@ -43,7 +44,7 @@ impl DataFile {
         Ok(Self {
             id,
             write_offset: 0,
-            io: create_io_manager(filename, IOType::Mmap)?,
+            io: create_io_manager(filename, IOType::MemoryMap)?,
         })
     }
 
@@ -53,7 +54,7 @@ impl DataFile {
         Ok(Self {
             id: 0,
             write_offset: 0,
-            io: create_io_manager(filename, IOType::Syscall)?,
+            io: create_io_manager(filename, IOType::System)?,
         })
     }
 
@@ -63,7 +64,7 @@ impl DataFile {
         Ok(Self {
             id: 0,
             write_offset: 0,
-            io: create_io_manager(filename, crate::file::io::IOType::Syscall)?,
+            io: create_io_manager(filename, IOType::System)?,
         })
     }
 
@@ -72,7 +73,7 @@ impl DataFile {
     }
 
     pub fn reset_io_type<P: AsRef<Path>>(&mut self, directory: P) -> BCResult<()> {
-        self.io = create_io_manager(data_file_name(directory, self.id), IOType::Syscall)?;
+        self.io = create_io_manager(data_file_name(directory, self.id), IOType::System)?;
 
         Ok(())
     }
